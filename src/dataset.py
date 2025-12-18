@@ -1,8 +1,8 @@
 #define the characters and how they map to states
 #7 states per character(recommended in the paper)
+#load feature vectors and parse the XML labels
 import numpy as np
 import torch
-from numpy.ma.core import indices
 from torch.utils.data import Dataset
 import xml.etree.ElementTree as ET
 import os
@@ -151,6 +151,45 @@ class IAMDataset(Dataset):
         targets = text_to_flat_start_path(text, num_frames)
 
         return torch.from_numpy(windows), torch.from_numpy(targets)
+
+    def get_transcription(xml_dir, line_id):
+        """
+        Finds the text label for a given line ID using the IAM XML structure.
+
+        Args:
+            xml_dir (str): Path to the folder containing xml files.
+            line_id (str): The ID of the line, e.g., "a01-007-00".
+
+        Returns:
+            str: The transcription text (e.g., "Since 1958...")
+        """
+        # 1. Deduce the XML filename from the line_id
+        # Format: a01-007-00 -> form ID is a01-007
+        parts = line_id.split('-')
+        form_id = f"{parts[0]}-{parts[1]}"  # "a01-007"
+        xml_path = os.path.join(xml_dir, form_id + ".xml")
+
+        if not os.path.exists(xml_path):
+            print(f"Warning: XML file not found for {line_id}")
+            return None
+
+        try:
+            # 2. Parse the XML
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
+
+            # 3. Find the specific line tag
+            # We look for <line id="a01-007-00" ... >
+            for line in root.findall(".//line"):
+                if line.get('id') == line_id:
+                    # The text is in the 'text' attribute
+                    return line.get('text')
+
+        except Exception as e:
+            print(f"Error parsing {xml_path}: {e}")
+            return None
+
+        return None
 
 
 
