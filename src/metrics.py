@@ -58,7 +58,7 @@ def calculate_error_rates(predictions, ground_truths):
     return cer, wer
 
 
-from dataset import characters, states_per_character
+from dataset import CHARS, STATES_PER_CHAR
 
 
 def greedy_decode(ann_output_log_probs):
@@ -80,9 +80,9 @@ def greedy_decode(ann_output_log_probs):
         if state != last_state:
             # We only record the character when we enter a NEW state
             # (Simple heuristic; real HMM decoding is better)
-            char_idx = state // states_per_character
-            if char_idx < len(characters):
-                decoded_str.append(characters[char_idx])
+            char_idx = state // STATES_PER_CHAR
+            if char_idx < len(CHARS):
+                decoded_str.append(CHARS[char_idx])
             last_state = state
 
     return "".join(decoded_str)
