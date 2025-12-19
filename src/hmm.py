@@ -7,8 +7,17 @@ import numpy as np
 
 
 class HybridHMM:
-    def __init__(self, num_chars=78, states_per_char=7):
-        self.total_states = num_chars * states_per_char
+    def __init__(self, num_chars=78, states_per_char=7, num_classes=None):
+        """
+                Args:
+                    num_chars (int): Number of characters (default 78).
+                    states_per_char (int): States per character (default 7).
+                    num_classes (int): Optional override for total states (CRITICAL FIX).
+                """
+        if num_classes is not None:
+            self.total_states = num_classes
+        else:
+            self.total_states = num_chars * states_per_char
 
         # --- 1. PRIORS (P(q)) ---
         # Initialize uniformly: 1 / 546
@@ -84,8 +93,9 @@ class HybridHMM:
 
         # --- Initialization (t=0) ---
         # We must start at the very first state of the text
-        first_state_global = text_state_indices[0]
-        scores[0, 0] = scaled_emissions[0, first_state_global]
+        if S > 0:
+            first_state_global = text_state_indices[0]
+            scores[0, 0] = scaled_emissions[0, first_state_global]
 
         # --- Recursion (Forward Pass) ---
         for t in range(1, T):
@@ -112,29 +122,32 @@ class HybridHMM:
 
         # --- Backtracking (Backward Pass) ---
         path = np.zeros(T, dtype=int)
-        curr_s = S - 1  # Start at the last state of the text
+        if S > 0:
+            curr_s = S - 1  # Start at the last state of the text
 
-        # If the image was too short for the text, we might end up with -inf.
-        # Simple safety: if score is -inf, just perform a linear interpolation (Flat Start)
-        if scores[T - 1, curr_s] == -np.inf:
-            return None  # Signal failure
+            # If the image was too short for the text, we might end up with -inf.
+            # Simple safety: if score is -inf, just perform a linear interpolation (Flat Start)
+            if scores[T - 1, curr_s] == -np.inf:
+                return None  # Signal failure
 
-        for t in range(T - 1, -1, -1):
-            # 1. Record the global state ID in the path
-            global_id = text_state_indices[curr_s]
-            path[t] = global_id
+            for t in range(T - 1, -1, -1):
+                # 1. Record the global state ID in the path
+                global_id = text_state_indices[curr_s]
+                path[t] = global_id
 
-            # 2. Accumulate counts for M-Step
-            self.prior_counts[global_id] += 1
+                # 2. Accumulate counts for M-Step
+                self.prior_counts[global_id] += 1
 
-            if t > 0:
-                direction = backpointers[t, curr_s]
-                if direction == 0:  # Stayed
-                    self.trans_counts[global_id, 0] += 1
-                elif direction == 1:  # Moved
-                    # The transition came FROM the previous state
-                    prev_global_id = text_state_indices[curr_s - 1]
-                    self.trans_counts[prev_global_id, 1] += 1
-                    curr_s -= 1  # Move sequence index back
+                if t > 0:
+                    direction = backpointers[t, curr_s]
+                    if direction == 0:  # Stayed
+                        self.trans_counts[global_id, 0] += 1
+                    elif direction == 1:  # Moved
+                        # The transition came FROM the previous state
+                        prev_global_id = text_state_indices[curr_s - 1]
+                        self.trans_counts[prev_global_id, 1] += 1
+                        curr_s -= 1  # Move sequence index back
+        else:
+            return None
 
         return path

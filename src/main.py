@@ -87,7 +87,7 @@ def main():
     model = ANN(num_classes=num_classes).to(DEVICE)
     # --- CRITICAL FIX END ---
 
-    hmm = HybridHMM()
+    hmm = HybridHMM(num_classes=num_classes)
     optimizer = optim.Adam(model.parameters(), lr=LR)
     criterion = nn.NLLLoss()
 
