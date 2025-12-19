@@ -11,8 +11,7 @@ from model import ANN
 from hmm import HybridHMM
 from metrics import calculate_error_rates, greedy_decode, plot_training_history
 
-
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Goes up one level from src
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FEATURE_DIR = os.path.join(BASE_DIR, 'IAM', 'features')
 XML_DIR = os.path.join(BASE_DIR, 'IAM', 'xml')
 
@@ -33,7 +32,8 @@ def train_epoch(model, dataloader, optimizer, criterion):
         targets = targets.to(DEVICE).squeeze(0)  # (T,)
 
         optimizer.zero_grad()
-        outputs = model(features)  # (T, 546)
+        outputs = model(features)  # Should be (T, num_classes)
+
         loss = criterion(outputs, targets)
         loss.backward()
         optimizer.step()
@@ -54,7 +54,7 @@ def validate(model, dataloader):
             # Greedy Decode
             pred_str = greedy_decode(outputs.cpu().numpy())
             preds.append(pred_str)
-            truths.append(text[0])  # dataloader returns tuple for strings
+            truths.append(text[0])
 
     return calculate_error_rates(preds, truths)
 
@@ -66,7 +66,7 @@ def main():
     # 1. Load Dataset
     full_dataset = IAMDataset(FEATURE_DIR, XML_DIR)
 
-    # 2. Split Data (90% Train, 10% Validation)
+    # 2. Split Data
     train_size = int(0.9 * len(full_dataset))
     val_size = len(full_dataset) - train_size
     train_subset, val_subset = random_split(full_dataset, [train_size, val_size])
@@ -76,8 +76,17 @@ def main():
 
     print(f"Train samples: {len(train_subset)} | Val samples: {len(val_subset)}")
 
-    # 3. Initialize Components
-    model = ANN().to(DEVICE)
+    # --- CRITICAL FIX START ---
+    # Calculate exactly how many output neurons we need.
+    # Dataset labels go from 0 to (num_chars * states_per_char) - 1.
+    # If the max label seen is 546, we need 547 outputs.
+    num_classes = (len(CHARS) * STATES_PER_CHAR) + 1
+    print(f"Dataset requires {num_classes} output neurons (based on {len(CHARS)} chars * {STATES_PER_CHAR} states).")
+
+    # Pass this number to the ANN
+    model = ANN(num_classes=num_classes).to(DEVICE)
+    # --- CRITICAL FIX END ---
+
     hmm = HybridHMM()
     optimizer = optim.Adam(model.parameters(), lr=LR)
     criterion = nn.NLLLoss()
@@ -102,42 +111,32 @@ def main():
         model.eval()
         hmm.reset_accumulators()
 
-        # Iterate over indices in the Training Subset
         for i in range(len(train_subset)):
-            # Get the real index in the main dataset
             real_idx = train_subset.indices[i]
-
-            # Get raw data
             feat, _, text = full_dataset.get_item_with_text(real_idx)
             feat = feat.to(DEVICE)
 
-            # Model prediction
             with torch.no_grad():
                 out = model(feat).cpu().numpy()
 
-            # HMM Viterbi
             scaled = hmm.get_scaled_emissions(out)
 
-            # Build target state sequence from text
             state_seq = []
             for char in text:
-                base = char_to_state_id(char)
-                for s in range(STATES_PER_CHAR): state_seq.append(base + s)
+                if char in CHARS:
+                    base = char_to_state_id(char)
+                    for s in range(STATES_PER_CHAR): state_seq.append(base + s)
 
-            # Find optimal path
-            path = hmm.forced_alignment(scaled, state_seq)
+            # Only align if we have a valid sequence
+            if len(state_seq) > 0:
+                path = hmm.forced_alignment(scaled, state_seq)
+                if path is not None:
+                    full_dataset.update_target_at_index(real_idx, torch.from_numpy(path).long())
 
-            # Update dataset cache
-            if path is not None:
-                full_dataset.update_target_at_index(real_idx, torch.from_numpy(path).long())
-
-        # Update HMM global params
         hmm.update_parameters()
 
         # B. TRAINING (M-Step)
         loss = train_epoch(model, train_loader, optimizer, criterion)
-
-        # C. VALIDATION
         cer, wer = validate(model, val_loader)
 
         print(f"Loss: {loss:.4f} | CER: {cer:.2%} | WER: {wer:.2%}")
@@ -145,10 +144,8 @@ def main():
         history['cer'].append(cer)
         history['wer'].append(wer)
 
-        # Save
         torch.save(model.state_dict(), f"model_epoch_{epoch}.pth")
 
-    # Final Plot
     plot_training_history(history, "training_plot.png")
 
 

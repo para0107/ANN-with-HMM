@@ -3,7 +3,7 @@
 
 import torch.nn as nn
 class ANN(nn.Module):
-    def __init__(self, feature_dim=60, window_width=9, num_chars=78, states_per_char=7):
+    def __init__(self, feature_dim=60, window_width=9, num_chars=78, states_per_char=7, num_classes=None):
         """
                 The Neural Network architecture defined in the paper.
 
@@ -12,13 +12,16 @@ class ANN(nn.Module):
                     window_width (int): Size of the sliding window (9).
                     num_chars (int): Number of characters in alphabet (78).
                     states_per_char (int): HMM states per character (7).
+                    num_classes (int): Optional override for total output neurons.
                 """
         super(ANN, self).__init__()
 
         self.input_size = feature_dim*window_width #60 features * 9 frames = 540 input neurons
 
-        self.output_size = num_chars*states_per_char #78 chars * 7 states  =546 output neurons(classes)
-
+        if num_classes is not None:
+            self.output_size = num_classes
+        else:
+            self.output_size = num_chars * states_per_char
         #Definde layers
         self.network = nn.Sequential(
             nn.Linear(self.input_size, 192),
