@@ -46,6 +46,10 @@ def train_epoch(model, dataloader, optimizer, criterion):
 def validate(model, dataloader):
     model.eval()
     preds, truths = [], []
+
+    # Counter to print only the first 3 examples
+    print_count = 0
+
     with torch.no_grad():
         for features, _, text in dataloader:
             features = features.to(DEVICE).squeeze(0)
@@ -56,8 +60,14 @@ def validate(model, dataloader):
             preds.append(pred_str)
             truths.append(text[0])
 
-    return calculate_error_rates(preds, truths)
+            # --- DEBUGGING PRINT ---
+            if print_count < 3:
+                print(f"\n[DEBUG] Truth: {text[0]}")
+                print(f"[DEBUG] Pred : {pred_str}")
+                print_count += 1
+            # -----------------------
 
+    return calculate_error_rates(preds, truths)
 
 def main():
     print(f"Using Device: {DEVICE}")

@@ -61,32 +61,37 @@ def calculate_error_rates(predictions, ground_truths):
 from dataset import CHARS, STATES_PER_CHAR
 
 
+# metrics.py
+
 def greedy_decode(ann_output_log_probs):
     """
-    Takes ANN output (Time, 546) and converts to string.
-    Rule:
-    1. Take max probability state at each frame.
-    2. Collapse repeats (State 0, State 0 -> State 0).
-    3. Map State ID -> Character.
+    Decodes the ANN output by only registering a character
+    when the 'first state' of that character appears.
     """
-    # 1. Argmax: Get best state for every frame
     best_states = np.argmax(ann_output_log_probs, axis=1)
-
-    # 2. Collapse repeats & Map to chars
     decoded_str = []
     last_state = -1
 
     for state in best_states:
-        if state != last_state:
-            # We only record the character when we enter a NEW state
-            # (Simple heuristic; real HMM decoding is better)
+        # Ignore the "blank" class if you added one (state 554 or similar)
+        if state >= len(CHARS) * STATES_PER_CHAR:
+            last_state = state
+            continue
+
+        # Check if this state is the START of a character
+        # e.g. if STATES_PER_CHAR=3, then 0, 3, 6, 9... are start states.
+        is_start_state = (state % STATES_PER_CHAR == 0)
+
+        # We add the char ONLY if we just entered this specific start state
+        # (Avoids repeating it if we stay in the start state for multiple frames)
+        if is_start_state and state != last_state:
             char_idx = state // STATES_PER_CHAR
             if char_idx < len(CHARS):
                 decoded_str.append(CHARS[char_idx])
-            last_state = state
+
+        last_state = state
 
     return "".join(decoded_str)
-
 
 def plot_training_history(history, save_path="training_plot.png"):
     """

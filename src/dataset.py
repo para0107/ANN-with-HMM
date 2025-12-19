@@ -9,7 +9,7 @@ import os
 
 # --- Configuration ---
 CHARS = ' !"#&\'()*+,-./0123456789:;?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-STATES_PER_CHAR = 7
+STATES_PER_CHAR = 3
 TOTAL_STATES = len(CHARS) * STATES_PER_CHAR
 
 
