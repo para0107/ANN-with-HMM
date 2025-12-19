@@ -11,8 +11,7 @@ from model import ANN
 from hmm import HybridHMM
 from metrics import calculate_error_rates, greedy_decode, plot_training_history
 
-# --- Paths (Adjusted to your structure) ---
-# Assuming you run main.py from the 'src' folder or root
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Goes up one level from src
 FEATURE_DIR = os.path.join(BASE_DIR, 'IAM', 'features')
 XML_DIR = os.path.join(BASE_DIR, 'IAM', 'xml')
