@@ -1,182 +1,113 @@
 # Offline Handwriting Recognition System (Hybrid ANN-HMM)
 
-A comprehensive implementation of an Offline Handwriting Recognition system using a **Hybrid Artificial Neural Network (ANN) and Hidden Markov Model (HMM)** architecture.
+This project implements a **Hybrid Artificial Neural Network (ANN) and Hidden Markov Model (HMM)** architecture for offline handwriting recognition.
 
-This project focuses on transcribing text from the **IAM Handwriting Database**. Unlike modern End-to-End deep learning approaches (like CRNN/CTC), this project builds the system from first principles using **Iterative Expectation-Maximization (EM)** training, making it highly valuable for understanding the foundations of sequence modeling and speech/text recognition.
+Unlike modern End-to-End Deep Learning approaches (such as CRNN/CTC) that treat recognition as a black box, this system is built from first principles using **Iterative Expectation-Maximization (EM)** training. It explicitly models the optical probability of character appearance (via ANN) and the temporal elasticity of handwriting structure (via HMM).
 
 ---
 
 ## 📖 Table of Contents
-1. [Project Overview](#-project-overview)
-2. [Technical Architecture](#-technical-architecture)
-    - [Preprocessing & Feature Extraction](#1-preprocessing--feature-extraction)
-    - [The Hybrid Model (ANN + HMM)](#2-the-hybrid-model-ann--hmm)
-    - [The Training Loop (EM Algorithm)](#3-the-training-loop-em-algorithm)
-3. [Prerequisites & Hardware](#-prerequisites--hardware)
-4. [Installation Guide](#-installation-guide)
-5. [Dataset Setup](#-dataset-setup)
-6. [Usage Instructions](#-usage-instructions)
-7. [Troubleshooting & Performance](#-troubleshooting--performance-notes)
+1. [Theoretical Framework](#-theoretical-framework)
+2. [Mathematical Formulation](#-mathematical-formulation)
+3. [Technical Architecture](#-technical-architecture)
+4. [Experiments & Results](#-experiments--results)
+5. [Analysis of Convergence Failure](#-analysis-of-convergence-failure)
 
 ---
 
-## 🔭 Project Overview
+## 🧠 Theoretical Framework
 
-This system takes images of handwritten lines as input and produces transcribed text. Because handwriting varies in width and style, we cannot simply map one image column to one character.
+This system addresses the **Sequence Transduction** problem: converting a variable-length sequence of image frames $X$ into a sequence of characters $W$.
 
-Instead, we use a **Hybrid Approach**:
-* **The ANN** acts as the "optical model." It looks at a small slice of the image and predicts: *"Which part of which character am I looking at?"*
-* **The HMM** acts as the "sequence model." It enforces grammar and structure (e.g., an 'a' must start, then continue, then end). It calculates the most likely path through the ANN's noisy predictions.
+### The Hybrid Hypothesis
+Handwriting recognition requires solving two distinct problems simultaneously:
+1.  **Optical Recognition:** Identifying what a specific slice of an image looks like (e.g., "This vertical line looks like part of an 'l'").
+2.  **Sequence Modeling:** Handling the elasticity of time (e.g., an 'm' might be 10 pixels wide or 20 pixels wide) and enforcing grammar.
+
+We solve this by combining a **Discriminative Model (ANN)** with a **Generative Model (HMM)**.
+
+---
+
+## 📐 Mathematical Formulation
+
+### 1. The Scaled Likelihood
+Standard HMMs require the **Emission Probability** $P(x|q)$ (the probability of observing image feature $x$ given state $q$). However, Neural Networks output $P(q|x)$ (the probability of state $q$ given feature $x$).
+
+To bridge this gap, we apply **Bayes' Theorem**. In the log domain, the scaled emission probability is calculated as:
+
+$$\log P(x|q) \approx \underbrace{\log P(q|x)}_{\text{ANN Output}} - \underbrace{\log P(q)}_{\text{State Prior}}$$
+
+This transformation allows the ANN to act as the emission probability estimator for the HMM.
+
+### 2. The Viterbi Algorithm (Forced Alignment)
+During the training phase (E-Step), we do not have pixel-level labels (we do not know where character $c$ starts or ends). We use the **Viterbi Algorithm** to find the optimal state sequence $Q^*$ that aligns the image frames $X$ to the ground truth text $W$:
+
+$$Q^* = \underset{Q}{\text{argmax}} \prod_{t=1}^{T} P(x_t | q_t) P(q_t | q_{t-1})$$
+
+### 3. Iterative EM Training
+The system learns via the **Expectation-Maximization (EM)** algorithm:
+1.  **Flat Start:** Initialize with a heuristic linear alignment.
+2.  **E-Step (Alignment):** Fix the ANN weights. Use Viterbi to align the training images to their text labels, generating new "soft" targets.
+3.  **M-Step (Update):** Fix the alignment targets. Train the ANN via Backpropagation to maximize the likelihood of these targets. Update HMM transition probabilities via frequency counting.
 
 ---
 
 ## 🏗 Technical Architecture
 
 ### 1. Preprocessing & Feature Extraction
-Before training, raw images are converted into mathematical feature vectors.
-* **Deslanting:** Heuristics are applied to correct cursive slant.
-* **Sliding Window:** A window of width **9 pixels** moves across the normalized image.
-* **Geometrical Features:** For each column in the window, 9 geometrical features are extracted (center of gravity, black pixel density, etc.).
-* **Final Vector:** A single frame input to the ANN is a flattened vector of size **540** ($9 \text{ columns} \times 60 \text{ features}$).
+* **Input:** Grayscale line images from the IAM Database.
+* **Sliding Window:** A window of width **9 pixels** moves across the image.
+* **Feature Vector:** 9 geometrical features (center of gravity, black pixel density, etc.) are extracted per column.
+* **Final Input:** A flattened vector of size **540** ($9 \text{ columns} \times 60 \text{ features}$) fed into the ANN.
 
-### 2. The Hybrid Model (ANN + HMM)
-* **Artificial Neural Network (ANN):**
-    * **Type:** Multi-Layer Perceptron (MLP).
-    * **Input:** 540 dimensions.
-    * **Hidden Layers:** 2 layers (192 and 128 neurons) with Sigmoid activation and Dropout (0.2).
-    * **Output:** `LogSoftmax` probabilities for every possible HMM state.
-    * **Dynamic Sizing:** The output size is calculated dynamically as `(Unique Chars × States Per Char) + 1 Blank`. For the IAM dataset, this is typically **554 neurons**.
+### 2. Neural Network (Optical Model)
+* **Architecture:** Multi-Layer Perceptron (MLP).
+* **Structure:** `Input(540) -> Dense(192) -> Dense(128) -> Output(N)`.
+* **Activation:** Sigmoid (Hidden layers), LogSoftmax (Output layer).
+* **Regularization:** Dropout (0.2).
 
-* **Hidden Markov Model (HMM):**
-    * **Topology:** Linear Left-to-Right (Bakis Model).
-    * **States per Character:** **7**. This allows the model to capture the "width" of a character (start, middle, end).
-    * **Transition Probability:** Learning how likely it is to stay in the same state (wide character) vs. move to the next (narrow character).
-
-### 3. The Training Loop (EM Algorithm)
-We do not have pixel-level labels (we don't know exactly where the 'a' starts in the image). We only have the sentence text. Therefore, we use **Expectation-Maximization**:
-
-1.  **Epoch 0 (Flat Start):** The ANN is trained on a heuristic/flat alignment to initialize weights.
-2.  **E-Step (Alignment - CPU):**
-    * We run the **Viterbi Algorithm** (Forced Alignment) on every image in the training set.
-    * This finds the "best path" matching the known text to the current image features.
-    * *Note:* This step is mathematically heavy and runs on the **CPU**.
-3.  **M-Step (Update - GPU):**
-    * The "best path" from the E-Step becomes the new "Ground Truth" target.
-    * The ANN is retrained (Backpropagation) to predict this new path.
-    * HMM Priors and Transitions are updated based on statistical counts.
+### 3. Hidden Markov Model (Sequence Model)
+* **Topology:** Linear Left-to-Right (Bakis Model).
+* **States Per Character:** Configurable (See Experiments).
+* **Transitions:** A state $i$ can transition to itself ($i$) or the next state ($i+1$).
 
 ---
 
-## ⚙ Prerequisites & Hardware
+## 📊 Experiments & Results
 
-**Critical Note on Performance:**
-* **GPU:** An NVIDIA GPU (RTX series) is **highly recommended**. Training the ANN on a CPU will take hours per epoch.
-* **CPU:** The Alignment phase (Viterbi) is single-threaded CPU work. A fast clock speed is beneficial.
-* **RAM:** This project loads feature matrices into memory.
-    * **Minimum:** 16 GB System RAM.
-    * *Recommendation:* Close web browsers and Electron apps (Teams/Discord) before running to prevent `MemoryError`.
+### Experiment I: High-Fidelity Topology (Baseline)
+The initial experiment was conducted to test the capacity of the model to capture fine-grained character details.
+
+**Configuration:**
+* **States Per Character:** 7 (Following classical literature recommendations).
+* **Total Output Classes:** 554 ($79 \text{ chars} \times 7 \text{ states} + 1$).
+* **Decoding Strategy:** Greedy Decoding.
+
+**Quantitative Results:**
+
+| Metric | Epoch 0 (Start) | Epoch 5 | Epoch 10 (Final) |
+| :--- | :--- | :--- | :--- |
+| **NLL Loss** | 4.96 | 2.70 | **2.67** |
+| **CER (Char Error)** | 97.6% | 132.4% | **166.9%** |
+| **WER (Word Error)** | 100% | 213.2% | **253.3%** |
+
+### Analysis of Convergence Failure
+Despite the **Loss** decreasing steadily (indicating the ANN was minimizing the negative log-likelihood), the **Error Rates** diverged to >100%.
+
+**The "Stuttering" Phenomenon:**
+A Character Error Rate (CER) above 100% indicates massive **Insertion Errors**. The model was transcribing strings significantly longer than the ground truth (e.g., predicting "ttthhheee" instead of "the").
+
+**Root Cause: Topology Mismatch**
+1.  **Constraint Violated:** Setting `STATES_PER_CHAR = 7` forces every character to be at least 7 frames wide.
+2.  **Reality:** Many characters in the IAM dataset (e.g., 'i', 'l', '1') are only 3-4 frames wide.
+3.  **Forced Misalignment:** The Viterbi algorithm was forced to align background noise or neighboring pixels to the character states to satisfy the 7-state length constraint.
+4.  **Vicious Cycle:** The ANN learned to classify silence/noise as character features, leading to hallucinated characters during decoding.
 
 ---
 
-## 📦 Installation Guide
+## 🔮 Future Work & Solution
 
-### 1. Environment Setup
-Create a virtual environment to keep dependencies isolated.
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-2. Install PyTorch (CUDA Version)
-Do not simply run pip install torch. You must install the version that supports your NVIDIA GPU.
+To resolve the divergence observed in Experiment I, the following changes are proposed for Experiment II:
 
-Bash
-
-# For CUDA 12.1 (Recommended for RTX 30xx/40xx)
-pip install torch torchvision torchaudio --index-url [https://download.pytorch.org/whl/cu121](https://download.pytorch.org/whl/cu121)
-3. Install Utilities
-Bash
-
-pip install numpy opencv-python matplotlib
-🗄 Dataset Setup
-The code expects the IAM Handwriting Database in a specific folder structure relative to the src folder.
-
-Create a folder named IAM in the project root.
-
-ASCII Labels: Place lines.txt inside IAM/ascii/.
-
-Images: Extract the line images into IAM/data/lines/.
-
-Final Structure:
-
-Plaintext
-
-ANN-with-HMM/
-├── IAM/
-│   ├── ascii/lines.txt
-│   ├── data/lines/     # Contains 'a01-000u-06.png', etc.
-│   └── features/       # Empty initially (Script will fill this)
-├── src/
-│   ├── main.py
-│   ├── preprocess.py
-│   ├── model.py
-│   ├── hmm.py
-│   └── ...
-💻 Usage Instructions
-Step 1: Feature Extraction
-Run the preprocessing script first. This converts images to .npy arrays.
-
-Bash
-
-python src/preprocess.py
-Time: 5–15 minutes (Disk dependent).
-
-Output: Populates IAM/features/.
-
-Step 2: Training
-Run the main training loop.
-
-Bash
-
-python src/main.py
-Epoch 0: Rapid initial training.
-
-Epoch 1+: The EM cycle begins.
-
-The console will say "Aligning training data...".
-
-It will appear stuck here for 10-20 minutes. This is normal (CPU Viterbi processing).
-
-Once alignment finishes, the GPU will kick in for the ANN training pass.
-
-🔧 Troubleshooting & Performance Notes
-1. "The console is stuck at 'Aligning training data...'"
-Status: Normal Behavior.
-
-Explanation: The script is running the Viterbi algorithm on ~3,500 lines using your CPU. It is not frozen.
-
-Check: Open Task Manager. If Python is using ~15-20% CPU (one full core), it is working. Go grab a coffee.
-
-2. RuntimeError: CUDA error: device-side assert triggered
-Status: Critical Error.
-
-Cause: The Dataset generated a label ID (e.g., 553) that is larger than the ANN's output layer (e.g., 546 neurons).
-
-Solution: Ensure main.py dynamically calculates num_classes and passes it to both the ANN and the HMM:
-
-Python
-
-num_classes = (len(CHARS) * STATES_PER_CHAR) + 1
-model = ANN(num_classes=num_classes)
-hmm = HybridHMM(num_classes=num_classes)
-3. ValueError: operands could not be broadcast together
-Status: Code mismatch.
-
-Cause: The HMM Priors vector size differs from the ANN output vector size.
-
-Solution: Your hmm.py must be updated to accept num_classes in its __init__ method, ensuring it initializes arrays of size 554 (or whatever the dataset requires), not the hardcoded 546.
-
-4. MemoryError or System Sluggishness
-Status: Hardware Bottleneck.
-
-Cause: Loading thousands of numpy arrays into RAM while Chrome/Teams are open.
-
-Solution: Close background applications. Use DataLoader with smaller batch sizes if necessary (though batch size affects the HMM update logic).
+1.  **Topology Relaxation:** Reduce `STATES_PER_CHAR` from **7** to **3** (Begin, Middle, End). This accommodates narrow characters while still modeling internal structure.
+2.  **Smart Decoding:** Update the decoder to only emit characters when a specific **Start State** is entered, rather than on every state change. This will filter out the repetitive "stuttering" artifacts.
