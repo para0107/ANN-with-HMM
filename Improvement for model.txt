@@ -1,0 +1,17 @@
+2. Why are the results "Bad"? (First Picture)
+Since you are seeing "bad results" (likely a loss graph that isn't going down, or accuracy staying low), here are the most common reasons in handwriting recognition:
+
+A. The "CTC" Constraint (Most Likely)
+If you are using CTC Loss (standard for this task), the output width of your Neural Network must be larger than the length of the text.
+
+Example: If an image contains the word "hello" (5 chars), but your CNN pools the image size down so much that the output only has 4 time-steps, the model cannot learn. It essentially "chokes," and loss stays high.
+
+Fix: Check model.py. If you have many MaxPooling layers, try removing one to keep the feature map wider.
+
+B. Data Normalization
+Deep learning models fail if inputs aren't normalized.
+
+Check: Ensure preprocess.py divides pixel values by 255.0. If you feed raw 0-255 pixels, gradients will explode.
+
+C. The "Blank" Token
+The model needs a "blank" character to represent spaces between letters. If your character set in dataset.py doesn't include a blank token (usually index 0), the HMM/CTC cannot separate repeated letters (like 'l' and 'l' in "hello").
