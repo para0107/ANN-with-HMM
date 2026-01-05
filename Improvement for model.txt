@@ -43,3 +43,17 @@ The "e e e e" & "a a a" Output: The model is not reading the handwriting. It is 
 The Cause: This is almost certainly caused by the nn.Sigmoid() activation functions in your model.py.
 
 The Problem with Sigmoid: Sigmoid squashes numbers between 0 and 1. When the network gets deep or the inputs are complex, the gradients (the learning signals) become tiny ("Vanishing Gradients"). The model stops learning from the image data and relies entirely on its internal biases.
+
+
+It seems my "Padding" fix backfired. By adding spaces to the start and end of the target text, I inadvertently taught the model that "The safest prediction is Space."
+
+Since most of a handwritten line is background (which looks like space), and I explicitly told it the edges were space, the model minimized its error by just predicting "Space" for everything. That is why your predictions turned empty (' ') in Epoch 4-6.
+
+We need to undo the padding and try a slightly different strategy to prevent the "Empty Prediction" collapse.
+
+The Fix: Revert Padding & Shorten Warmup
+Remove Padding (src/dataset.py): Go back to the standard "Flat Start". It is less biased than my padded version.
+
+Shorten Warmup (src/main.py): We will reduce the "Warmup Phase" from 5 epochs to 1 epoch.
+
+Why? If we train too long on "Flat Start" (which is an artificial, incorrect alignment), the model memorizes that incorrect alignment. We want it to switch to "Smart Alignment" (HMM) as soon as it knows what an 'A' looks like roughly.

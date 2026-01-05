@@ -25,15 +25,11 @@ def state_id_to_char(state_id):
 
 def text_to_flat_start_path(text, total_frames):
     """
-    Evenly distributes frames among characters, BUT adds padding
-    to account for margins in the handwriting image.
+    Standard Flat Start: Distributes text evenly across the image.
+    (Padding removed to prevent 'Space Collapse')
     """
-    # 1. Pad the text with spaces (margins)
-    # We assume roughly 10% of the image on each side is blank margin
-    padded_text = "   " + text + "   "
-
     sequence_states = []
-    for char in padded_text:
+    for char in text:
         start = char_to_state_id(char)
         for i in range(STATES_PER_CHAR):
             sequence_states.append(start + i)
@@ -41,10 +37,11 @@ def text_to_flat_start_path(text, total_frames):
     num_states = len(sequence_states)
     if num_states == 0: return np.zeros(total_frames, dtype=int)
 
+    # Safety: if image is shorter than minimum states required
     if total_frames < num_states:
         return np.array([sequence_states[0]] * total_frames)
 
-    # Linear interpolation over the total frames
+    # Linear interpolation
     indices = np.linspace(0, num_states, total_frames, endpoint=False).astype(int)
     return np.array([sequence_states[i] for i in indices])
 
@@ -115,11 +112,8 @@ class IAMDataset(Dataset):
 
     def __getitem__(self, idx):
         windows, _, text = self.get_item_with_text(idx)
-
-        # Use Cached (Aligned) target if available, else Flat Start
         if idx in self.target_cache:
             targets = self.target_cache[idx]
         else:
             targets = torch.from_numpy(text_to_flat_start_path(text, windows.shape[0])).long()
-
         return windows, targets, text

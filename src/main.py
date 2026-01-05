@@ -8,14 +8,14 @@ import os
 from dataset import IAMDataset, CHARS, STATES_PER_CHAR, char_to_state_id
 from model import ANN
 from hmm import HybridHMM
-from metrics import calculate_cer  # <--- IMPORT THE NEW METRIC
+from metrics import calculate_cer
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FEATURE_DIR = os.path.join(BASE_DIR, 'IAM', 'features')
 XML_DIR = os.path.join(BASE_DIR, 'IAM', 'xml')
 
 BATCH_SIZE = 1
-LR = 0.0001
+LR = 0.0002  # Increased slightly to help it learn faster
 EPOCHS = 20
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -61,7 +61,6 @@ def validate(model, dataloader, hmm):
             outputs = model(features)
             pred = hmm.decode(outputs.cpu().numpy())
 
-            # Use Character Error Rate instead of exact match
             cer = calculate_cer(pred, text[0])
             total_cer += cer
             total_lines += 1
@@ -92,8 +91,9 @@ def main():
     for epoch in range(1, EPOCHS + 1):
         print(f"\n--- Epoch {epoch} ---")
 
-        # Use Flat Start for first 5 epochs (Warmup)
-        if epoch > 5:
+        # --- REVISED WARMUP ---
+        # Align starting from Epoch 2 (instead of Epoch 6)
+        if epoch > 1:
             print("Aligning (Viterbi)...")
             model.eval()
             hmm.reset_accumulators()
@@ -117,13 +117,12 @@ def main():
                         full_dataset.update_target_at_index(real_idx, torch.from_numpy(path).long())
             hmm.update_parameters()
         else:
-            print("Skipping Alignment (Warmup Phase: Using Padded Flat Start)")
+            print("Skipping Alignment (Warmup Phase: Standard Flat Start)")
 
         print("Training...")
         loss = train_epoch(model, train_loader, optimizer, criterion, hmm_decoder=hmm)
         avg_cer = validate(model, val_loader, hmm)
 
-        # Now you will see "Character Error Rate: 85.2%" instead of "Line Error: 100%"
         print(f"Epoch {epoch} Done. Loss: {loss:.4f} | Avg CER: {avg_cer:.2%}")
 
         torch.save(model.state_dict(), f"model_epoch_{epoch}.pth")
