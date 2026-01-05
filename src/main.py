@@ -8,13 +8,14 @@ import os
 from dataset import IAMDataset, CHARS, STATES_PER_CHAR, char_to_state_id
 from model import ANN
 from hmm import HybridHMM
+from metrics import calculate_cer  # <--- IMPORT THE NEW METRIC
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FEATURE_DIR = os.path.join(BASE_DIR, 'IAM', 'features')
 XML_DIR = os.path.join(BASE_DIR, 'IAM', 'xml')
 
 BATCH_SIZE = 1
-LR = 0.0001  # Keep the lower learning rate!
+LR = 0.0001
 EPOCHS = 20
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -34,7 +35,6 @@ def train_epoch(model, dataloader, optimizer, criterion, hmm_decoder=None):
         loss = criterion(outputs, targets)
         loss.backward()
 
-        # Clip Gradients to prevent crash
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
 
         optimizer.step()
@@ -45,24 +45,28 @@ def train_epoch(model, dataloader, optimizer, criterion, hmm_decoder=None):
         if i % 100 == 0 and hmm_decoder is not None:
             with torch.no_grad():
                 pred_text = hmm_decoder.decode(outputs.cpu().numpy())
-            print(f"  [Batch {i}] Truth: '{text[0]}' | Pred: '{pred_text}'")
+            print(f"  [Batch {i}] Truth: '{text[0]}'\n             Pred:  '{pred_text}'")
 
     return total_loss / batches if batches > 0 else 0
 
 
 def validate(model, dataloader, hmm):
     model.eval()
-    total_err = 0
-    total_chars = 0
+    total_cer = 0
+    total_lines = 0
+
     with torch.no_grad():
         for features, _, text in dataloader:
             features = features.to(DEVICE).squeeze(0)
             outputs = model(features)
             pred = hmm.decode(outputs.cpu().numpy())
-            if pred != text[0]:
-                total_err += 1
-            total_chars += 1
-    return total_err / total_chars if total_chars > 0 else 0
+
+            # Use Character Error Rate instead of exact match
+            cer = calculate_cer(pred, text[0])
+            total_cer += cer
+            total_lines += 1
+
+    return total_cer / total_lines if total_lines > 0 else 0
 
 
 def main():
@@ -88,8 +92,7 @@ def main():
     for epoch in range(1, EPOCHS + 1):
         print(f"\n--- Epoch {epoch} ---")
 
-        # --- WARMUP LOGIC ---
-        # Do not align for the first 5 epochs. Let ANN learn shapes first.
+        # Use Flat Start for first 5 epochs (Warmup)
         if epoch > 5:
             print("Aligning (Viterbi)...")
             model.eval()
@@ -114,13 +117,14 @@ def main():
                         full_dataset.update_target_at_index(real_idx, torch.from_numpy(path).long())
             hmm.update_parameters()
         else:
-            print("Skipping Alignment (Warmup Phase: Using Flat Start)")
-            # In warmup, dataset[i] automatically returns Flat Start targets
+            print("Skipping Alignment (Warmup Phase: Using Padded Flat Start)")
 
         print("Training...")
         loss = train_epoch(model, train_loader, optimizer, criterion, hmm_decoder=hmm)
-        val_ler = validate(model, val_loader, hmm)
-        print(f"Epoch {epoch} Done. Loss: {loss:.4f} | Val Line Error: {val_ler:.2%}")
+        avg_cer = validate(model, val_loader, hmm)
+
+        # Now you will see "Character Error Rate: 85.2%" instead of "Line Error: 100%"
+        print(f"Epoch {epoch} Done. Loss: {loss:.4f} | Avg CER: {avg_cer:.2%}")
 
         torch.save(model.state_dict(), f"model_epoch_{epoch}.pth")
 

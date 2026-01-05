@@ -5,20 +5,18 @@ import xml.etree.ElementTree as ET
 import os
 
 # --- Configuration ---
-# Standard IAM character set
 CHARS = ' !"#&\'()*+,-./0123456789:;?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-STATES_PER_CHAR = 3  # Fixed: Set to 7 as recommended
+STATES_PER_CHAR = 3
 TOTAL_STATES = len(CHARS) * STATES_PER_CHAR
 
 
 def char_to_state_id(char):
     if char not in CHARS:
-        char = ' '  # Map unknown chars to space
+        char = ' '
     return CHARS.index(char) * STATES_PER_CHAR
 
 
 def state_id_to_char(state_id):
-    """Helper to convert a state back to a character."""
     if state_id < 0 or state_id >= TOTAL_STATES:
         return ''
     char_idx = state_id // STATES_PER_CHAR
@@ -26,9 +24,16 @@ def state_id_to_char(state_id):
 
 
 def text_to_flat_start_path(text, total_frames):
-    """Evenly distributes frames among characters (Flat Start)."""
+    """
+    Evenly distributes frames among characters, BUT adds padding
+    to account for margins in the handwriting image.
+    """
+    # 1. Pad the text with spaces (margins)
+    # We assume roughly 10% of the image on each side is blank margin
+    padded_text = "   " + text + "   "
+
     sequence_states = []
-    for char in text:
+    for char in padded_text:
         start = char_to_state_id(char)
         for i in range(STATES_PER_CHAR):
             sequence_states.append(start + i)
@@ -36,12 +41,10 @@ def text_to_flat_start_path(text, total_frames):
     num_states = len(sequence_states)
     if num_states == 0: return np.zeros(total_frames, dtype=int)
 
-    # Safety: if image is shorter than minimum states required
     if total_frames < num_states:
-        # Repeat the last valid state to fill
         return np.array([sequence_states[0]] * total_frames)
 
-    # Linear interpolation
+    # Linear interpolation over the total frames
     indices = np.linspace(0, num_states, total_frames, endpoint=False).astype(int)
     return np.array([sequence_states[i] for i in indices])
 
@@ -97,7 +100,6 @@ class IAMDataset(Dataset):
         try:
             features = np.load(feat_path).astype(np.float32)
         except:
-            # Return dummy if load fails
             return torch.zeros((10, 540)), None, ""
 
         features_padded = np.pad(features, ((self.half_window, self.half_window), (0, 0)), mode='edge')
@@ -113,8 +115,11 @@ class IAMDataset(Dataset):
 
     def __getitem__(self, idx):
         windows, _, text = self.get_item_with_text(idx)
+
+        # Use Cached (Aligned) target if available, else Flat Start
         if idx in self.target_cache:
             targets = self.target_cache[idx]
         else:
             targets = torch.from_numpy(text_to_flat_start_path(text, windows.shape[0])).long()
+
         return windows, targets, text
