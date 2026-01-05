@@ -7,7 +7,7 @@ import os
 # --- Configuration ---
 # Standard IAM character set
 CHARS = ' !"#&\'()*+,-./0123456789:;?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-STATES_PER_CHAR = 7  # Fixed: Set to 7 as recommended
+STATES_PER_CHAR = 3  # Fixed: Set to 7 as recommended
 TOTAL_STATES = len(CHARS) * STATES_PER_CHAR
 
 

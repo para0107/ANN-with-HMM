@@ -15,3 +15,31 @@ Check: Ensure preprocess.py divides pixel values by 255.0. If you feed raw 0-255
 
 C. The "Blank" Token
 The model needs a "blank" character to represent spaces between letters. If your character set in dataset.py doesn't include a blank token (usually index 0), the HMM/CTC cannot separate repeated letters (like 'l' and 'l' in "hello").
+
+
+Why? (The Diagnosis)
+The Loss Increased: It went from 3.24 (Epoch 1) to 3.86 (Epoch 2). In a healthy training run, the loss should always go down. An increase means the model is getting confused and its weights are diverging.
+
+The "hghghgh" Output: This is a classic failure mode in HMM/CTC networks. The model has gotten stuck in a loop where it predicts the same couple of characters ('h', 'g', 'w') over and over again for every single time step. It does this because it hasn't learned the alignment between the image and the text, so it's just guessing a "safe" pattern to minimize the penalty, but it failed.
+
+The results show that the model is still collapsing. It initially outputs random characters (which is good!) but quickly gets stuck repeating the same letters like "d.d.d.d..." or "hghghgh...".
+
+This usually happens because the "Alignment" step is failing. The model tries to align the text to the image, but since the model is untrained (stupid), it creates a bad alignment. Then it trains on that bad alignment, gets confused, and gives up, outputting the same "safe" character over and over.
+
+To fix this, we need to verify that the model is capable of learning at all. We do this by trying to Overfit on a Single Image. If the model cannot learn to read one single word perfectly, it will never learn the whole dataset.
+Analysis of the Debug OutputThe Loss Dropped: It went from 5.53 $\to$ 3.11. This proves the network is actually training.It Sees the Letters: Look at the messy prediction:Target: A MOVE to stop Mr. GaitskellPrediction (Epoch 200): ... A A t t ... M M M ... o o ... V s V ... s t o p ...It clearly found "A", "M", "o", "V", "E", "stop".The Problem: It is "stuttering". It repeats letters excessively (M M M M M) and inserts random noise.
+
+Here is the summary of the critical changes I made and the specific problems they fixed.
+1. Problem: The "d.d.d.d" Collapse (Model Stupidity)The Issue:Your model started outputting the same character repeatedly (d.d.d.d or h.h.h.h). This happened because the Alignment Step (HMM) failed.At Epoch 1, the model is "dumb." It doesn't know where letters are.When we asked it to align the text (Viterbi algorithm) immediately, it created garbage alignments.The model then trained on this garbage, got confused, and gave up, outputting the most common "safe" character to minimize loss.The Fix (in src/main.py):Added a "Warmup Phase": I added logic to skip the HMM alignment for the first 5 epochs.Instead, it forces a Flat Start (linear alignment). This tells the model: "Assume the text is spread evenly across the image."This gives the Neural Network time to learn basic shapes (like what an 'a' looks like) before we ask it to do the hard work of precise alignment.
+2. Problem: Exploding Loss (3.2 $\to$ 5.5)The Issue:Your loss value was increasing instead of decreasing. This means the model was taking "steps" that were too big, effectively destroying its own brain (weights) with every update.The Fix (in src/main.py):Lowered Learning Rate: Changed LR from 0.0003 to 0.0001. This forces the model to learn more carefully.Added Gradient Clipping: Added torch.nn.utils.clip_grad_norm_(...). This acts as a safety belt. If the model tries to make a massive, destructive change to its weights, this function forces it to take a small, safe step instead.
+3. Problem: Complexity Overload (Stuttering)The Issue:We previously set STATES_PER_CHAR = 7. While the paper recommends this for final results, it is very hard for a new model to learn. It requires the model to sustain the same character prediction for 7 consecutive frames perfectly. The model couldn't handle it and started stuttering (M M M M M).The Fix (in src/dataset.py):Reverted to 3 States: I changed STATES_PER_CHAR back to 3.This is much easier for the model to learn initially. Once the model works well with 3 states, you can try increasing it to 5 or 7 later if you need higher accuracy.
+
+
+
+The Loss "Cheated": You noticed the loss dropped from 4.2 to 1.8 at Epoch 6 and stayed there. In a healthy model, the loss decreases gradually. A sudden drop followed by a flat line usually means the model found a "lazy" strategy: it realized that if it predicts the most common letters (like e, a, or space) all the time, it can get a "decent" score without actually looking at the image.
+
+The "e e e e" & "a a a" Output: The model is not reading the handwriting. It is just guessing the most frequent character in the English language ('e') or the dataset ('a') repeatedly.
+
+The Cause: This is almost certainly caused by the nn.Sigmoid() activation functions in your model.py.
+
+The Problem with Sigmoid: Sigmoid squashes numbers between 0 and 1. When the network gets deep or the inputs are complex, the gradients (the learning signals) become tiny ("Vanishing Gradients"). The model stops learning from the image data and relies entirely on its internal biases.
