@@ -14,7 +14,7 @@ FEATURE_DIR = os.path.join(BASE_DIR, 'IAM', 'features')
 XML_DIR = os.path.join(BASE_DIR, 'IAM', 'xml')
 
 BATCH_SIZE = 1
-LR = 0.0003
+LR = 0.0001
 EPOCHS = 10
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -33,7 +33,10 @@ def train_epoch(model, dataloader, optimizer, criterion, hmm_decoder=None):
 
         loss = criterion(outputs, targets)
         loss.backward()
+        torch.nn.utils.clip_grad_norm(model.parameters(), max_norm=5.0)
         optimizer.step()
+
+
 
         total_loss += loss.item()
         batches += 1
