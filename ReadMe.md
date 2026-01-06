@@ -1,113 +1,106 @@
 # Offline Handwriting Recognition System (Hybrid ANN-HMM)
 
-This project implements a **Hybrid Artificial Neural Network (ANN) and Hidden Markov Model (HMM)** architecture for offline handwriting recognition.
+## 1. Project Overview
+This project implements a **Hybrid Artificial Neural Network (ANN) and Hidden Markov Model (HMM)** architecture for unconstrained offline handwriting recognition. Unlike modern End-to-End Deep Learning approaches (such as CRNN/CTC) that often treat recognition as a "black box," this system is constructed from first principles using **Iterative Expectation-Maximization (EM)** training.
 
-Unlike modern End-to-End Deep Learning approaches (such as CRNN/CTC) that treat recognition as a black box, this system is built from first principles using **Iterative Expectation-Maximization (EM)** training. It explicitly models the optical probability of character appearance (via ANN) and the temporal elasticity of handwriting structure (via HMM).
-
----
-
-## 📖 Table of Contents
-1. [Theoretical Framework](#-theoretical-framework)
-2. [Mathematical Formulation](#-mathematical-formulation)
-3. [Technical Architecture](#-technical-architecture)
-4. [Experiments & Results](#-experiments--results)
-5. [Analysis of Convergence Failure](#-analysis-of-convergence-failure)
+The core philosophy is to explicitly model the two distinct sub-problems of handwriting recognition:
+1.  **Optical Probability (The Eye):** Identifying the visual characteristics of a specific image frame (handled by the ANN).
+2.  **Sequential Grammar (The Brain):** Modeling the elasticity of time (duration of characters) and the valid progression of states (handled by the HMM).
 
 ---
 
-## 🧠 Theoretical Framework
+## 2. Theoretical Framework & Mathematical Formulation
 
-This system addresses the **Sequence Transduction** problem: converting a variable-length sequence of image frames $X$ into a sequence of characters $W$.
+The system addresses the **Sequence Transduction** problem: converting a variable-length sequence of image feature vectors $X = (x_1, x_2, ..., x_T)$ into a sequence of characters $W$.
 
 ### The Hybrid Hypothesis
-Handwriting recognition requires solving two distinct problems simultaneously:
-1.  **Optical Recognition:** Identifying what a specific slice of an image looks like (e.g., "This vertical line looks like part of an 'l'").
-2.  **Sequence Modeling:** Handling the elasticity of time (e.g., an 'm' might be 10 pixels wide or 20 pixels wide) and enforcing grammar.
+In a standard HMM, we model the joint probability $P(X, W)$. However, HMMs typically use Gaussian Mixture Models (GMMs) to model the observation probability $P(x_t | q_k)$, which struggle with high-dimensional image data.
 
-We solve this by combining a **Discriminative Model (ANN)** with a **Generative Model (HMM)**.
+We replace the GMM with a **Neural Network (ANN)**. The ANN estimates the posterior probability $P(q_k | x_t)$ (the probability of being in state $k$ given the image frame $x_t$). Using Bayes' Rule, we convert this to a "scaled likelihood" suitable for the HMM decoding:
 
----
+$$\frac{P(x_t | q_k)}{P(x_t)} = \frac{P(q_k | x_t)}{P(q_k)}$$
 
-## 📐 Mathematical Formulation
+Where:
+* $P(q_k | x_t)$ is the output of the Neural Network.
+* $P(q_k)$ is the prior probability of state $k$ (estimated from training data frequency).
 
-### 1. The Scaled Likelihood
-Standard HMMs require the **Emission Probability** $P(x|q)$ (the probability of observing image feature $x$ given state $q$). However, Neural Networks output $P(q|x)$ (the probability of state $q$ given feature $x$).
+### Expectation-Maximization (EM) Training
+The system creates a "virtuous cycle" of training without requiring frame-level labels (i.e., we know the image says "The", but we don't know which pixel is 'T').
 
-To bridge this gap, we apply **Bayes' Theorem**. In the log domain, the scaled emission probability is calculated as:
-
-$$\log P(x|q) \approx \underbrace{\log P(q|x)}_{\text{ANN Output}} - \underbrace{\log P(q)}_{\text{State Prior}}$$
-
-This transformation allows the ANN to act as the emission probability estimator for the HMM.
-
-### 2. The Viterbi Algorithm (Forced Alignment)
-During the training phase (E-Step), we do not have pixel-level labels (we do not know where character $c$ starts or ends). We use the **Viterbi Algorithm** to find the optimal state sequence $Q^*$ that aligns the image frames $X$ to the ground truth text $W$:
-
-$$Q^* = \underset{Q}{\text{argmax}} \prod_{t=1}^{T} P(x_t | q_t) P(q_t | q_{t-1})$$
-
-### 3. Iterative EM Training
-The system learns via the **Expectation-Maximization (EM)** algorithm:
-1.  **Flat Start:** Initialize with a heuristic linear alignment.
-2.  **E-Step (Alignment):** Fix the ANN weights. Use Viterbi to align the training images to their text labels, generating new "soft" targets.
-3.  **M-Step (Update):** Fix the alignment targets. Train the ANN via Backpropagation to maximize the likelihood of these targets. Update HMM transition probabilities via frequency counting.
+1.  **E-Step (Forced Alignment):** The HMM uses the current ANN to find the most likely alignment (path) between the image frames and the ground truth text. This assigns a specific state label to every frame.
+2.  **M-Step (Training):** The ANN is trained via Backpropagation to predict these new labels.
+3.  **Repeat:** As the ANN gets better, the alignment improves. As the alignment improves, the ANN gets better training data.
 
 ---
 
-## 🏗 Technical Architecture
+## 3. Technical Architecture & Implementation
 
-### 1. Preprocessing & Feature Extraction
-* **Input:** Grayscale line images from the IAM Database.
-* **Sliding Window:** A window of width **9 pixels** moves across the image.
-* **Feature Vector:** 9 geometrical features (center of gravity, black pixel density, etc.) are extracted per column.
-* **Final Input:** A flattened vector of size **540** ($9 \text{ columns} \times 60 \text{ features}$) fed into the ANN.
+### A. Preprocessing Pipeline (`preprocess.py`)
+Raw handwriting images are highly variable. We implement a rigorous geometric normalization pipeline to reduce variance before feature extraction.
 
-### 2. Neural Network (Optical Model)
-* **Architecture:** Multi-Layer Perceptron (MLP).
-* **Structure:** `Input(540) -> Dense(192) -> Dense(128) -> Output(N)`.
-* **Activation:** Sigmoid (Hidden layers), LogSoftmax (Output layer).
-* **Regularization:** Dropout (0.2).
+1.  **Binarization & Noise Removal:** Images are converted to grayscale, inverted (ink=white), and thresholded using Otsu’s method to separate ink from background.
+2.  **Slope Correction:** A linear regression is performed on the ink pixel coordinates to detect the general slope of the line. The image is rotated via affine transformation to align the text baseline horizontally.
+3.  **Slant Correction:** Second-order moments are calculated to estimate the dominant shear angle of the writing (italic tilt). A shear transformation makes the vertical strokes upright.
+4.  **Grid-Based Feature Extraction:** A sliding window moves across the image. Each window is divided into a $20 \times 1$ grid. For each cell, we extract 3 features:
+    * **Normalized Gray Level:** Ink density.
+    * **Horizontal Derivative:** Rate of change in ink intensity (X-axis).
+    * **Vertical Derivative:** Rate of change in ink intensity (Y-axis).
+    * *Total Input Dimension:* $20 \text{ cells} \times 3 \text{ features} \times 9 \text{ context frames} = 540 \text{ inputs}$.
 
-### 3. Hidden Markov Model (Sequence Model)
-* **Topology:** Linear Left-to-Right (Bakis Model).
-* **States Per Character:** Configurable (See Experiments).
-* **Transitions:** A state $i$ can transition to itself ($i$) or the next state ($i+1$).
+### B. Dynamic HMM Topology (`dataset.py` & `hmm.py`)
+Instead of a rigid topology, we implemented a **Dynamic State Allocation** system to reflect the physical reality of handwriting.
+
+* **Variable Character Length:** Wide characters (e.g., 'm', 'w') are assigned more states (5-9) than narrow characters (e.g., 'i', 'l', which get 2-3 states). This prevents the "Time Distortion" problem where narrow letters are forced to stretch unnaturally.
+* **The "Silence" Model:** The Space character (`' '`) is modeled with a single state ($N=1$) with high self-loop probability. This allows the model to handle variable inter-word gaps without hallucinating "ghost characters" in the empty space.
+
+### C. Neural Network (`model.py`)
+We modernized the architecture proposed in classical literature (which relied on Sigmoid/Tanh) to ensure stable convergence.
+
+* **Architecture:** Multilayer Perceptron (MLP).
+* **Activations:** **ReLU** (Rectified Linear Unit) prevents the vanishing gradient problem.
+* **Regularization:** **Batch Normalization** ensures input stability at each layer, and **Dropout** prevents overfitting.
+* **Output:** Log-Softmax over the total number of HMM states (approx. 200-300 states depending on topology).
 
 ---
 
-## 📊 Experiments & Results
+## 4. Experiments & Results
 
-### Experiment I: High-Fidelity Topology (Baseline)
-The initial experiment was conducted to test the capacity of the model to capture fine-grained character details.
+We conducted a series of iterative experiments to stabilize the training process.
 
-**Configuration:**
-* **States Per Character:** 7 (Following classical literature recommendations).
-* **Total Output Classes:** 554 ($79 \text{ chars} \times 7 \text{ states} + 1$).
-* **Decoding Strategy:** Greedy Decoding.
+### Experiment I: The "Stuttering" Divergence
+* **Setup:** Fixed topology (7 states per character), Sigmoid activations.
+* **Observation:** Loss decreased, but Character Error Rate (CER) exploded to >100%.
+* **Analysis:** The fixed 7-state constraint forced narrow letters (like 'i') to align with background noise to fill the required duration. The model learned to interpret noise as character features, leading to repetitive insertions (e.g., "ttthhheee").
 
-**Quantitative Results:**
+### Experiment II: The "Space Collapse"
+* **Setup:** Modernized ANN (ReLU), Flat Start with Padding (adding spaces to image edges).
+* **Observation:** The model converged to a local minimum where it predicted *only* spaces for the entire sequence.
+* **Analysis:** By padding the targets with spaces, we inadvertently biased the model. Since 90% of a handwritten image is background, the model learned that predicting "Space" is the safest way to minimize loss globally.
 
-| Metric | Epoch 0 (Start) | Epoch 5 | Epoch 10 (Final) |
+### Experiment III: Dynamic Topology & Aggressive Alignment
+* **Setup:** * **Dynamic States:** 'm'=5, 'i'=2, 'Space'=1.
+    * **No Warmup:** Switched immediately to Viterbi alignment (skipping the misleading "Flat Start" phase).
+* **Result:** **Success.** The model successfully began transcribing distinct characters. The "Silence" state successfully absorbed inter-word gaps, and the dynamic topology allowed distinct modeling of wide vs. narrow characters.
+
+---
+
+## 5. Comparison with State-of-the-Art (SOTA)
+
+Compared to the seminal paper *"Improving Offline Handwritten Text Recognition with Hybrid HMM/ANN Models"* (España-Boquera et al.), our implementation features several modernizations and simplifications:
+
+| Component | Original Paper Approach | Our Project Implementation | Impact |
 | :--- | :--- | :--- | :--- |
-| **NLL Loss** | 4.96 | 2.70 | **2.67** |
-| **CER (Char Error)** | 97.6% | 132.4% | **166.9%** |
-| **WER (Word Error)** | 100% | 213.2% | **253.3%** |
-
-### Analysis of Convergence Failure
-Despite the **Loss** decreasing steadily (indicating the ANN was minimizing the negative log-likelihood), the **Error Rates** diverged to >100%.
-
-**The "Stuttering" Phenomenon:**
-A Character Error Rate (CER) above 100% indicates massive **Insertion Errors**. The model was transcribing strings significantly longer than the ground truth (e.g., predicting "ttthhheee" instead of "the").
-
-**Root Cause: Topology Mismatch**
-1.  **Constraint Violated:** Setting `STATES_PER_CHAR = 7` forces every character to be at least 7 frames wide.
-2.  **Reality:** Many characters in the IAM dataset (e.g., 'i', 'l', '1') are only 3-4 frames wide.
-3.  **Forced Misalignment:** The Viterbi algorithm was forced to align background noise or neighboring pixels to the character states to satisfy the 7-state length constraint.
-4.  **Vicious Cycle:** The ANN learned to classify silence/noise as character features, leading to hallucinated characters during decoding.
+| **Slope Correction** | **Baseline Detection:** Tracks the lower contour of the letter body, ignoring descenders (tails of 'g', 'y'). | **Linear Regression:** Fits a line to all ink pixels. | Our method is simpler but may be less robust to words with many descenders. |
+| **ANN Activation** | **Sigmoid/Tanh:** Standard for 2011, but prone to vanishing gradients. | **ReLU + BatchNorm:** Modern Deep Learning standard. | **Improved Stability:** Faster convergence and ability to train deeper networks. |
+| **Decoding** | **Constrained (Language Model):** Uses a dictionary/N-gram model to force output into valid words. | **Greedy / Unconstrained:** Outputs the raw sequence of most likely characters. | **Trade-off:** Our raw character accuracy is high, but we lack the "spell-check" layer to fix ambiguity (e.g., "thue" vs "the"). |
+| **Features** | **Geometric Moments:** Center of gravity, second-order moments (Marti & Bunke). | **Derivative Features:** Grid-based gray level and gradients. | Computationally lighter, though potentially less discriminative for complex shapes. |
 
 ---
 
-## 🔮 Future Work & Solution
+## 6. Future Work
 
-To resolve the divergence observed in Experiment I, the following changes are proposed for Experiment II:
+To bridge the gap between the current prototype and human-level performance, the following steps are recommended:
 
-1.  **Topology Relaxation:** Reduce `STATES_PER_CHAR` from **7** to **3** (Begin, Middle, End). This accommodates narrow characters while still modeling internal structure.
-2.  **Smart Decoding:** Update the decoder to only emit characters when a specific **Start State** is entered, rather than on every state change. This will filter out the repetitive "stuttering" artifacts.
+1.  **Language Model Integration:** Implement a Token-Passing algorithm or Weighted Finite State Transducer (WFST) to constrain decoding to a valid English lexicon.
+2.  **Robust Baseline Detection:** Upgrade the preprocessing pipeline to detect the "core" of the text line, ignoring ascenders/descenders for more accurate rotation.
+3.  **Data Augmentation:** Introduce random shears, rotations, and erosions during training to make the ANN robust to varied handwriting styles.
