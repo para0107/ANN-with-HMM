@@ -10,12 +10,15 @@ from model import ANN
 from hmm import HybridHMM
 from metrics import calculate_cer
 
+# NEW IMPORT
+from debug_utils import raw_dump
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FEATURE_DIR = os.path.join(BASE_DIR, 'IAM', 'features')
 XML_DIR = os.path.join(BASE_DIR, 'IAM', 'xml')
 
 BATCH_SIZE = 1
-LR = 0.0002  # Increased slightly to help it learn faster
+LR = 0.0002
 EPOCHS = 20
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -36,16 +39,23 @@ def train_epoch(model, dataloader, optimizer, criterion, hmm_decoder=None):
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-
         optimizer.step()
 
         total_loss += loss.item()
         batches += 1
 
-        if i % 100 == 0 and hmm_decoder is not None:
+        if i % 100 == 0:
+            # 1. HMM Decode
             with torch.no_grad():
-                pred_text = hmm_decoder.decode(outputs.cpu().numpy())
-            print(f"  [Batch {i}] Truth: '{text[0]}'\n             Pred:  '{pred_text}'")
+                hmm_pred = hmm_decoder.decode(outputs.cpu().numpy())
+
+            # 2. Raw Network Output (What the brain sees before HMM logic)
+            raw_pred = raw_dump(outputs.unsqueeze(0))
+
+            print(f"  [Batch {i}] Truth: '{text[0]}'")
+            print(f"             Raw:   '{raw_pred}'")
+            print(f"             HMM:   '{hmm_pred}'")
+            print("-" * 20)
 
     return total_loss / batches if batches > 0 else 0
 
@@ -54,17 +64,14 @@ def validate(model, dataloader, hmm):
     model.eval()
     total_cer = 0
     total_lines = 0
-
     with torch.no_grad():
         for features, _, text in dataloader:
             features = features.to(DEVICE).squeeze(0)
             outputs = model(features)
             pred = hmm.decode(outputs.cpu().numpy())
-
             cer = calculate_cer(pred, text[0])
             total_cer += cer
             total_lines += 1
-
     return total_cer / total_lines if total_lines > 0 else 0
 
 
@@ -91,33 +98,30 @@ def main():
     for epoch in range(1, EPOCHS + 1):
         print(f"\n--- Epoch {epoch} ---")
 
-        # --- REVISED WARMUP ---
-        # Align starting from Epoch 2 (instead of Epoch 6)
-        if epoch > 1:
-            print("Aligning (Viterbi)...")
-            model.eval()
-            hmm.reset_accumulators()
-            for i in range(len(train_subset)):
-                real_idx = train_subset.indices[i]
-                feat, _, text = full_dataset.get_item_with_text(real_idx)
-                feat = feat.to(DEVICE)
-                with torch.no_grad():
-                    out = model(feat).cpu().numpy()
+        # --- AGGRESSIVE STRATEGY: NO WARMUP ---
+        # We align from Epoch 1. It will be messy but better than Flat Start poisoning.
+        print("Aligning (Viterbi)...")
+        model.eval()
+        hmm.reset_accumulators()
+        for i in range(len(train_subset)):
+            real_idx = train_subset.indices[i]
+            feat, _, text = full_dataset.get_item_with_text(real_idx)
+            feat = feat.to(DEVICE)
+            with torch.no_grad():
+                out = model(feat).cpu().numpy()
 
-                scaled = hmm.get_scaled_emissions(out)
-                state_seq = []
-                for char in text:
-                    if char in CHARS:
-                        base = char_to_state_id(char)
-                        for s in range(STATES_PER_CHAR): state_seq.append(base + s)
+            scaled = hmm.get_scaled_emissions(out)
+            state_seq = []
+            for char in text:
+                if char in CHARS:
+                    base = char_to_state_id(char)
+                    for s in range(STATES_PER_CHAR): state_seq.append(base + s)
 
-                if len(state_seq) > 0:
-                    path = hmm.forced_alignment(scaled, state_seq)
-                    if path is not None:
-                        full_dataset.update_target_at_index(real_idx, torch.from_numpy(path).long())
-            hmm.update_parameters()
-        else:
-            print("Skipping Alignment (Warmup Phase: Standard Flat Start)")
+            if len(state_seq) > 0:
+                path = hmm.forced_alignment(scaled, state_seq)
+                if path is not None:
+                    full_dataset.update_target_at_index(real_idx, torch.from_numpy(path).long())
+        hmm.update_parameters()
 
         print("Training...")
         loss = train_epoch(model, train_loader, optimizer, criterion, hmm_decoder=hmm)

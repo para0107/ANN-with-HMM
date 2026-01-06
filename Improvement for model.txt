@@ -57,3 +57,8 @@ Remove Padding (src/dataset.py): Go back to the standard "Flat Start". It is les
 Shorten Warmup (src/main.py): We will reduce the "Warmup Phase" from 5 epochs to 1 epoch.
 
 Why? If we train too long on "Flat Start" (which is an artificial, incorrect alignment), the model memorizes that incorrect alignment. We want it to switch to "Smart Alignment" (HMM) as soon as it knows what an 'A' looks like roughly.
+
+
+We need a radical change to the strategy. We will use Greedy Decoding as a diagnostic tool inside the training loop to see exactly what the raw output looks like before the HMM touches it.
+
+We will also force the HMM to be more aggressive by changing the HybridHMM initialization.
