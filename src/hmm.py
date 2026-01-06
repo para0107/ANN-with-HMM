@@ -25,10 +25,20 @@ class HybridHMM:
         self.transitions = self.trans_counts / row_sums
 
     def get_scaled_emissions(self, ann_log_output):
-        # Subtracting log_priors converts Posterior (ANN) to Likelihood (HMM)
-        # We dampen it slightly (0.5) to prevent rare states from exploding
+        # ann_log_output shape: (Time, States)
+
+        # 1. Standard Bayes Rule
         log_priors = np.log(self.priors + 1e-10)
-        return ann_log_output - (1.0 * log_priors)  # You can try 0.5 if it remains unstable
+        scaled = ann_log_output - log_priors
+
+        # 2. HEURISTIC: Penalize the 'Space' state slightly to force characters
+        # Assuming State 0 is space (check CHAR_TO_STATE_RANGES to be sure)
+        space_idx = 0
+        # Add a penalty (negative value) to space log-prob
+        # Or simply boost all others
+        scaled[:, space_idx] -= 1.0
+
+        return scaled
 
     def decode(self, log_probs):
         """Greedy Decode handling variable states."""

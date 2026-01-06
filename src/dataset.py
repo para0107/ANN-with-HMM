@@ -16,6 +16,7 @@ STATE_COUNTS = {
     'f': 4, 't': 3, 'r': 3,
 }
 DEFAULT_STATES = 3
+FRAMES_PER_STATE = 4  # Heuristic: How many visual frames typically make up one state?
 
 CHAR_TO_STATE_RANGES = {}
 TOTAL_STATES = 0
@@ -34,21 +35,47 @@ def char_to_state_seq(char):
 
 
 def text_to_flat_start_path(text, total_frames):
-    # Padding with spaces to handle margins
-    padded_text = "   " + text + "   "
+    """
+    Centered Flat Start:
+    Estimates the length of the text and centers it in the image,
+    filling the surrounding area with Space states.
+    Prevents 'Stretching' which poisons the model.
+    """
+    # 1. Generate the sequence of states for the text
+    text_state_sequence = []
+    for char in text:
+        text_state_sequence.extend(char_to_state_seq(char))
 
-    full_state_sequence = []
-    for char in padded_text:
-        full_state_sequence.extend(char_to_state_seq(char))
+    num_text_states = len(text_state_sequence)
+    if num_text_states == 0: return np.zeros(total_frames, dtype=int)
 
-    num_states = len(full_state_sequence)
-    if num_states == 0: return np.zeros(total_frames, dtype=int)
+    # 2. Estimate required frames (Heuristic)
+    # We repeat each state N times to give it duration
+    estimated_len = num_text_states * FRAMES_PER_STATE
 
-    if total_frames < num_states:
-        return np.array(full_state_sequence[:total_frames])
+    # 3. Create the full path array initialized to Space (ID for ' ' state)
+    # Find ID for space
+    space_start, _ = CHAR_TO_STATE_RANGES[' ']
+    path = np.full(total_frames, space_start, dtype=int)
 
-    indices = np.linspace(0, num_states, total_frames, endpoint=False).astype(int)
-    return np.array([full_state_sequence[i] for i in indices])
+    # 4. Handle Lengths
+    if estimated_len >= total_frames:
+        # Text is too long (or image too short), squeeze it to fit
+        indices = np.linspace(0, num_text_states, total_frames, endpoint=False).astype(int)
+        path = np.array([text_state_sequence[i] for i in indices])
+    else:
+        # Text fits inside. Center it.
+        start_idx = (total_frames - estimated_len) // 2
+
+        # Expand the text states
+        expanded_seq = []
+        for s in text_state_sequence:
+            expanded_seq.extend([s] * FRAMES_PER_STATE)
+
+        # Copy into the middle of the path
+        path[start_idx: start_idx + len(expanded_seq)] = expanded_seq
+
+    return path
 
 
 def get_transcription(xml_dir, line_id):
@@ -116,19 +143,8 @@ class IAMDataset(Dataset):
         return windows, targets, text
 
 
-# --- NEW: Custom Collate Function ---
 def iam_collate_fn(batch):
-    """
-    Pads features and targets to the max length in the batch.
-    """
     features, targets, texts = zip(*batch)
-
-    # 1. Pad Features (Batch, Max_Time, Dim)
-    # pad_sequence expects list of (Time, Dim)
-    padded_features = pad_sequence(features, batch_first=True, padding_value=0.0)
-
-    # 2. Pad Targets (Batch, Max_Time)
-    # We use -1 as the ignore index (loss function must know this)
-    padded_targets = pad_sequence(targets, batch_first=True, padding_value=-1)
-
-    return padded_features, padded_targets, texts
+    features_padded = pad_sequence(features, batch_first=True, padding_value=0.0)
+    targets_padded = pad_sequence(targets, batch_first=True, padding_value=-1)
+    return features_padded, targets_padded, texts

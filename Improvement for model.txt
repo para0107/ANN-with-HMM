@@ -92,3 +92,71 @@ Average 'i' width: ~10 pixels.
 Window Shift: 1 pixel (usually).
 
 If we use 3 states for 'W', each state represents 13 pixels. That is too much variance for the ANN to capture in one state.
+
+
+
+7. Recent Experimental Iterations & Troubleshooting
+The development of this Hybrid ANN-HMM system required solving several critical convergence pathologies common in sequence modeling. Below is the documentation of the specific failures encountered and the architectural changes made to resolve them.
+
+Experiment IV: The "Insertion Explosion" (Stuttering Pathology)
+The Symptom: During early training, the model predicted character sequences that were nearly as long as the input image width. For an image containing "The", the output would resemble TTTThhhheeeee... (hundreds of characters long).
+
+The Diagnosis: Transition Probability Mismatch.
+
+The HMM transition matrix was initialized with a self-loop probability P(q
+i
+​
+ ∣q
+i
+​
+ )=0.5 and a next-state probability P(q
+i+1
+​
+ ∣q
+i
+​
+ )=0.5.
+
+This implies an expected state duration of only 2 frames. However, in the IAM dataset at 300 DPI, a single character often spans 20–30 frames.
+
+Result: The HMM was statistically forced to exit the state too early. To consume the remaining frames of the character ink, it had no choice but to re-enter the character or hallucinate new ones, causing massive insertion errors.
+
+The Fix: We modified the HMM initialization to enforce "Sticky States". The self-loop probability was increased to 0.9 (encouraging duration), and the exit probability reduced to 0.1.
+
+Outcome: The output length stabilized to match the ground truth length, resolving the stuttering.
+
+Experiment V: Batch Processing & Tensor Dimensionality
+The Problem: Training with BATCH_SIZE = 1 resulted in noisy gradient updates and slow convergence. Increasing the batch size caused RuntimeError due to variable image widths in the IAM dataset.
+
+The Technical Challenge: Standard Neural Networks expect fixed-size tensors, but handwriting lines vary in length T.
+
+Attempting to simply flatten the input resulted in Mat1 and Mat2 shape mismatch errors because the temporal dimension T was being merged with the feature dimension F incorrectly.
+
+The Fix:
+
+Custom Collation: We implemented a collate_fn that pads all feature sequences in a batch to the length of the longest sequence (using zero-padding).
+
+3D Tensor Handling: We refactored the ANN's forward pass to accept (Batch, Time, Features). It temporarily merges Batch and Time to process frames independently (B⋅T,F) and then reconstructs the sequence structure before passing it to the HMM.
+
+Outcome: Enabled stable batch training (Batch Size 8), significantly smoothing the loss curve.
+
+Experiment VI: "Margin Poisoning" & The Space Collapse
+The Symptom: After the HMM alignment phase began, the model stopped predicting characters entirely and converged to predicting only Spaces (a blank string), despite the Loss decreasing.
+
+The Diagnosis: Toxic Flat Start Alignment.
+
+In the "Warmup Phase," we used a linear Flat Start that stretched the target text (e.g., "The cat") across the entire width of the image (0 to W).
+
+However, handwriting images typically have wide white margins on the left and right.
+
+The Poison: The model was forced to align the first letter 'T' with the white pixels of the left margin. The Neural Network learned the incorrect association: White Background≈Character Ink.
+
+Since 80% of an image is background, the model optimized the loss by predicting the "Space" state everywhere.
+
+The Fix: Centered Flat Start.
+
+We modified the alignment logic in dataset.py. Instead of stretching the text, we now estimate the physical length of the text (based on average character width) and center it in the target array.
+
+The remaining frames at the start and end are explicitly assigned to the Space State.
+
+Outcome: This teaches the model that margins are silence, protecting the character states from learning background noise. This is currently the active experiment, aiming to allow characters to re-emerge from the correct positions.
