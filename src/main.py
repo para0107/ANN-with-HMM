@@ -18,8 +18,8 @@ FEATURE_DIR = os.path.join(BASE_DIR, 'IAM', 'features')
 XML_DIR = os.path.join(BASE_DIR, 'IAM', 'xml')
 
 # --- Config ---
-BATCH_SIZE = 1
-LR = 0.0002
+BATCH_SIZE = 8
+LR = 0.0001
 EPOCHS = 20
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

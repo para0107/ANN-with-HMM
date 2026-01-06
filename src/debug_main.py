@@ -6,9 +6,11 @@ import numpy as np
 import os
 
 # Custom modules
-from dataset import IAMDataset, CHARS, STATES_PER_CHAR
+# UPDATED IMPORTS: Removed STATES_PER_CHAR, added TOTAL_STATES
+from dataset import IAMDataset, CHARS, TOTAL_STATES
 from model import ANN
 from hmm import HybridHMM
+from debug_utils import raw_dump
 
 # --- Config ---
 # We use a very small learning rate to be safe, but high enough to learn one image
@@ -42,7 +44,10 @@ def main():
     print(f"Target Text to Learn: '{sample_text}'")
 
     # 3. Model Setup
-    num_classes = len(CHARS) * STATES_PER_CHAR
+    # UPDATED: Use TOTAL_STATES directly
+    num_classes = TOTAL_STATES
+    print(f"Initializing for {num_classes} dynamic states.")
+
     model = ANN(num_classes=num_classes).to(DEVICE)
     hmm = HybridHMM(num_classes=num_classes)
 
@@ -80,12 +85,17 @@ def main():
             # Sanity Check Print every 10 epochs
             if epoch % 10 == 0:
                 with torch.no_grad():
-                    pred_str = hmm.decode(outputs.cpu().numpy())
-                print(f"Epoch {epoch} | Loss: {total_loss:.4f} | Pred: '{pred_str}'")
+                    # Check raw output using the new debug util
+                    raw_str = raw_dump(outputs.unsqueeze(0))
+                    # Check HMM decode (should improve as well)
+                    hmm_str = hmm.decode(outputs.cpu().numpy())
+
+                print(f"Epoch {epoch} | Loss: {total_loss:.4f}")
+                print(f"  Raw: '{raw_str}'")
+                print(f"  HMM: '{hmm_str}'")
 
     print("\n--- Debug Finished ---")
-    print("If 'Pred' matches 'Target Text', the model works.")
-    print("If 'Pred' is still 'd.d.d', the Data or Model Architecture is broken.")
+    print("If 'HMM' matches 'Target Text', the model works.")
 
 
 if __name__ == "__main__":

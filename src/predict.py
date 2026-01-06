@@ -6,8 +6,9 @@ import os
 
 # Import your modules
 from src.model import ANN
-from src.dataset import CHARS, STATES_PER_CHAR
-from src.preprocess import clean_image, deslant_image, normalize_size, extract_features
+# UPDATED: Import TOTAL_STATES
+from src.dataset import CHARS, TOTAL_STATES
+from src.preprocess import clean_image, deslant_image, normalize_size, extract_features, deslope_image
 from src.hmm import HybridHMM
 
 # Configuration
@@ -28,8 +29,9 @@ def process_single_image(image_path):
         print("Error: Could not read image.")
         return None
 
-    # Pipeline
+    # Pipeline (Make sure this matches preprocess.py!)
     img = clean_image(img)
+    img = deslope_image(img)  # Added this step
     img = deslant_image(img)
     img = normalize_size(img)
 
@@ -39,19 +41,18 @@ def process_single_image(image_path):
 
     features = extract_features(img)
 
-    # Model expects input (1, T, 540) if using the Flatten logic in forward,
-    # or just (T, 540). The ANN.forward usually expects flattened batch.
-    # Let's match dataset.py logic: Windowing.
+    # Check if features are empty
+    if features.shape[0] == 0:
+        print("Error: Extracted features are empty.")
+        return None
 
-    # NOTE: The ANN in model.py expects (Batch, Input_Size).
-    # Input_Size = 540.
-    # So we need to create windows from the features.
-
+    # The ANN expects (Batch, Input_Size).
+    # Since dataset.py pads/windows the data, we must do the same here.
     window_width = 9
     half_window = window_width // 2
     feat_dim = features.shape[1]  # 60
 
-    # Pad
+    # Pad features to handle borders
     features_padded = np.pad(features, ((half_window, half_window), (0, 0)), mode='edge')
     num_frames = features.shape[0]
 
@@ -67,13 +68,21 @@ def process_single_image(image_path):
 
 def predict(image_path):
     # 1. Setup Model
-    num_classes = len(CHARS) * STATES_PER_CHAR
+    # UPDATED: Use TOTAL_STATES directly
+    num_classes = TOTAL_STATES
+    print(f"Initializing model with {num_classes} states...")
+
     model = ANN(num_classes=num_classes).to(DEVICE)
 
     # Load Weights
     if os.path.exists(MODEL_PATH):
-        model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-        print(f"Loaded weights from {MODEL_PATH}")
+        try:
+            model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+            print(f"Loaded weights from {MODEL_PATH}")
+        except Exception as e:
+            print(f"Error loading weights: {e}")
+            print("Ensure that the model architecture matches the checkpoint (TOTAL_STATES).")
+            return
     else:
         print(f"Warning: {MODEL_PATH} not found. Using random weights (Garbage output expected).")
 
@@ -87,13 +96,13 @@ def predict(image_path):
     # 3. Inference
     with torch.no_grad():
         # Pass data. The model expects (Batch, 540).
-        # We treat Time steps as a "Batch" of frames.
+        # We treat Time steps as a "Batch" of frames for the forward pass.
         outputs = model(input_tensor)  # Output: (Time, Num_Classes)
 
         # Convert to numpy
         log_probs = outputs.cpu().numpy()
 
-        # Decode
+        # Decode using the HMM's greedy decoder
         text = hmm.decode(log_probs)
 
         print("\n" + "=" * 30)
@@ -102,7 +111,6 @@ def predict(image_path):
 
 
 if __name__ == "__main__":
-    # You can change this to your image path
-    target_image = "IAM/data/formsA-D/a01-000u.png"
-
+    # Change this to your target image
+    target_image = "path/to/your/image.png"
     predict(target_image)

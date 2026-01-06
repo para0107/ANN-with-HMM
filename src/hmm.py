@@ -7,7 +7,10 @@ class HybridHMM:
         self.total_states = num_classes
         self.priors = np.full(self.total_states, 1.0 / self.total_states)
         self.prior_counts = np.zeros(self.total_states)
-        self.transitions = np.full((self.total_states, 2), 0.5)
+        self.transitions = np.zeros((self.total_states, 2))
+        self.transitions[:, 0] = 0.9  # 90% probability to stay
+        self.transitions[:, 1] = 0.1  # 10% probability to move
+
         self.trans_counts = np.zeros((self.total_states, 2))
 
     def reset_accumulators(self):
@@ -22,8 +25,10 @@ class HybridHMM:
         self.transitions = self.trans_counts / row_sums
 
     def get_scaled_emissions(self, ann_log_output):
+        # Subtracting log_priors converts Posterior (ANN) to Likelihood (HMM)
+        # We dampen it slightly (0.5) to prevent rare states from exploding
         log_priors = np.log(self.priors + 1e-10)
-        return ann_log_output - log_priors
+        return ann_log_output - (1.0 * log_priors)  # You can try 0.5 if it remains unstable
 
     def decode(self, log_probs):
         """Greedy Decode handling variable states."""

@@ -36,17 +36,27 @@ def char_to_state_seq(char):
 
 
 def text_to_flat_start_path(text, total_frames):
-    """Dynamic Flat Start: Stretches states based on char width."""
+    """
+    Dynamic Flat Start with PADDING.
+    Adds 'Space' states to the start and end to handle image margins.
+    """
+    # --- FIX: Add padding to the text ---
+    # This aligns the start/end of the image (margins) to the 'Space' state
+    # instead of forcing the first letter 'T' to align with the empty white border.
+    padded_text = "   " + text + "   "
+
     full_state_sequence = []
-    for char in text:
+    for char in padded_text:
         full_state_sequence.extend(char_to_state_seq(char))
 
     num_states = len(full_state_sequence)
     if num_states == 0: return np.zeros(total_frames, dtype=int)
 
+    # Squeeze if image is too small
     if total_frames < num_states:
         return np.array(full_state_sequence[:total_frames])
 
+    # Interpolate (Stretch)
     indices = np.linspace(0, num_states, total_frames, endpoint=False).astype(int)
     return np.array([full_state_sequence[i] for i in indices])
 
