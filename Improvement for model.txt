@@ -62,3 +62,33 @@ Why? If we train too long on "Flat Start" (which is an artificial, incorrect ali
 We need a radical change to the strategy. We will use Greedy Decoding as a diagnostic tool inside the training loop to see exactly what the raw output looks like before the HMM touches it.
 
 We will also force the HMM to be more aggressive by changing the HybridHMM initialization.
+
+What to Look For:
+
+Raw: shows what the Neural Network actually thinks.
+
+HMM: shows what the HMM decodes from that.
+
+If Raw is e e e e, the network is dead.
+
+If Raw is t h e c a t, but HMM is empty, the HMM parameters are broken.
+
+This will pinpoint the exact point of failure.
+
+Space Modeling (The "Collapse" Cause)
+Your model keeps collapsing to predicting "Space" ( ) everywhere.
+
+The Paper's Way: The "Space" character is special. It should usually have a single state (or very few) that loops, whereas characters need strict left-to-right progression.
+
+Your Implementation: Treats space exactly like 'A' (3 states).
+Variable States Implementation
+We will fix the Dynamic States issue first, as it is the most direct answer to your intuition. We will determine how many states each letter deserves.
+
+Step 1: Analyze Character Widths (Mental Check)
+Average 'W' width: ~40 pixels.
+
+Average 'i' width: ~10 pixels.
+
+Window Shift: 1 pixel (usually).
+
+If we use 3 states for 'W', each state represents 13 pixels. That is too much variance for the ANN to capture in one state.
