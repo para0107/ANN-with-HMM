@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from torch.nn.utils.rnn import pad_sequence
 import xml.etree.ElementTree as ET
 import os
 
@@ -8,16 +9,14 @@ import os
 CHARS = ' !"#&\'()*+,-./0123456789:;?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 
 # --- DYNAMIC STATE MAPPING ---
-# Logic: Wider characters gets more states. ' ' gets 1 state to loop freely.
 STATE_COUNTS = {
     ' ': 1,  # Space
     '.': 2, ',': 2, "'": 2, '-': 2, '!': 2, 'i': 2, 'I': 2, 'l': 2, 'j': 2, '1': 2,
-    'm': 5, 'w': 5, 'M': 5, 'W': 5,  # Wide letters
+    'm': 5, 'w': 5, 'M': 5, 'W': 5,
     'f': 4, 't': 3, 'r': 3,
 }
-DEFAULT_STATES = 3  # For everything else
+DEFAULT_STATES = 3
 
-# Build the map: Char -> (Start_State_ID, Count)
 CHAR_TO_STATE_RANGES = {}
 TOTAL_STATES = 0
 
@@ -29,20 +28,13 @@ for char in CHARS:
 
 
 def char_to_state_seq(char):
-    """Returns list of state IDs for a character."""
     if char not in CHARS: char = ' '
     start, count = CHAR_TO_STATE_RANGES[char]
     return [start + i for i in range(count)]
 
 
 def text_to_flat_start_path(text, total_frames):
-    """
-    Dynamic Flat Start with PADDING.
-    Adds 'Space' states to the start and end to handle image margins.
-    """
-    # --- FIX: Add padding to the text ---
-    # This aligns the start/end of the image (margins) to the 'Space' state
-    # instead of forcing the first letter 'T' to align with the empty white border.
+    # Padding with spaces to handle margins
     padded_text = "   " + text + "   "
 
     full_state_sequence = []
@@ -52,11 +44,9 @@ def text_to_flat_start_path(text, total_frames):
     num_states = len(full_state_sequence)
     if num_states == 0: return np.zeros(total_frames, dtype=int)
 
-    # Squeeze if image is too small
     if total_frames < num_states:
         return np.array(full_state_sequence[:total_frames])
 
-    # Interpolate (Stretch)
     indices = np.linspace(0, num_states, total_frames, endpoint=False).astype(int)
     return np.array([full_state_sequence[i] for i in indices])
 
@@ -124,3 +114,21 @@ class IAMDataset(Dataset):
         else:
             targets = torch.from_numpy(text_to_flat_start_path(text, windows.shape[0])).long()
         return windows, targets, text
+
+
+# --- NEW: Custom Collate Function ---
+def iam_collate_fn(batch):
+    """
+    Pads features and targets to the max length in the batch.
+    """
+    features, targets, texts = zip(*batch)
+
+    # 1. Pad Features (Batch, Max_Time, Dim)
+    # pad_sequence expects list of (Time, Dim)
+    padded_features = pad_sequence(features, batch_first=True, padding_value=0.0)
+
+    # 2. Pad Targets (Batch, Max_Time)
+    # We use -1 as the ignore index (loss function must know this)
+    padded_targets = pad_sequence(targets, batch_first=True, padding_value=-1)
+
+    return padded_features, padded_targets, texts

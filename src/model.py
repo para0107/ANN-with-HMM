@@ -50,11 +50,26 @@ class ANN(nn.Module):
     def forward(self, x):
         """
         Args:
-            x (Tensor): Input tensor of shape (Batch_Size, 540)
+            x (Tensor): Input tensor of shape (Batch_Size, Time_Steps, 540)
         Returns:
-            Tensor: Log-probabilities of shape (Batch_Size, Num_Classes)
+            Tensor: Log-probabilities of shape (Batch_Size, Time_Steps, Num_Classes)
         """
-        if x.dim() > 2:
-            x = x.view(x.size(0), -1)
+        # 1. Save original dimensions
+        if x.dim() == 3:
+            batch_size, time_steps, features = x.size()
 
-        return self.network(x)
+            # 2. Flatten Batch and Time: (Batch * Time, 540)
+            # This treats every frame as an independent sample
+            x = x.view(-1, features)
+
+            # 3. Pass through network
+            x = self.network(x)  # -> (Batch * Time, Output_Size)
+
+            # 4. Reshape back: (Batch, Time, Output_Size)
+            x = x.view(batch_size, time_steps, -1)
+
+        else:
+            # Fallback for 2D inputs (if any)
+            x = self.network(x)
+
+        return x
