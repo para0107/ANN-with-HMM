@@ -16,134 +16,167 @@ FEATURE_DIR = os.path.join(BASE_DIR, 'IAM', 'features')
 XML_DIR = os.path.join(BASE_DIR, 'IAM', 'xml')
 
 BATCH_SIZE = 8
-BASE_LR = 0.005
-EPOCHS = 20
+BASE_LR = 0.001
+EPOCHS = 50
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-WARMUP_EPOCHS = 5
+WARMUP_EPOCHS = 3
 
 
-def get_lr(epoch, base_lr=0.005, warmup_epochs=3):
-    """Learning rate warmup then constant."""
+def get_lr(epoch, base_lr=0.001, warmup_epochs=3):
     if epoch <= warmup_epochs:
-        return base_lr * epoch / warmup_epochs
+        return base_lr * (epoch / warmup_epochs)
     return base_lr
+
+
+def compute_class_weights(dataset, num_classes):
+    """Compute inverse frequency weights for each class."""
+    print("Computing class weights...")
+    counts = np.zeros(num_classes)
+
+    sample_size = min(len(dataset), 2000)
+    indices = np.random.choice(len(dataset), sample_size, replace=False)
+
+    for i in indices:
+        _, targets, _ = dataset[i]
+        for t in targets.numpy():
+            if 0 <= t < num_classes:
+                counts[t] += 1
+
+    weights = np.ones(num_classes)
+    total = counts.sum()
+    if total > 0:
+        for i in range(num_classes):
+            if counts[i] > 0:
+                weights[i] = total / (num_classes * counts[i])
+            else:
+                weights[i] = 1.0
+
+    weights = np.clip(weights, 0.1, 10.0)
+    print(f"Weight range: {weights.min():.3f} - {weights.max():.3f}")
+    return torch.FloatTensor(weights)
 
 
 def train_epoch(model, dataloader, optimizer, criterion, hmm_decoder=None, epoch=1):
     model.train()
     total_loss = 0
-    batches = 0
-    non_empty_predictions = 0
-    total_grad = 0
+    total_cer = 0
+    num_samples = 0
+    non_empty = 0
 
-    for i, (features, targets, text) in enumerate(dataloader):
+    for batch_idx, (features, targets, texts) in enumerate(dataloader):
         features = features.to(DEVICE)
         targets = targets.to(DEVICE)
 
         optimizer.zero_grad()
         outputs = model(features)
 
-        loss = criterion(outputs.view(-1, TOTAL_STATES), targets.view(-1))
+        batch_size, time_steps, num_classes = outputs.size()
+        outputs_flat = outputs.view(-1, num_classes)
+        targets_flat = targets.view(-1)
+
+        loss = criterion(outputs_flat, targets_flat)
 
         if torch.isnan(loss) or torch.isinf(loss):
-            print(f"  [Batch {i}] Skipping - NaN/Inf loss")
+            print(f"Warning: Invalid loss at batch {batch_idx}")
             continue
 
         loss.backward()
-
-        batch_grad = 0
-        for p in model.parameters():
-            if p.grad is not None:
-                batch_grad += p.grad.abs().mean().item()
-        total_grad += batch_grad
-
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         optimizer.step()
 
         total_loss += loss.item()
-        batches += 1
 
-        with torch.no_grad():
-            sample_out = outputs[0].cpu().numpy()
-            if hmm_decoder:
-                pred = hmm_decoder.decode(sample_out)
-                if len(pred.strip()) > 0:
-                    non_empty_predictions += 1
-
-        if i % 100 == 0:
+        if batch_idx % 100 == 0:
             with torch.no_grad():
-                sample_out = outputs[0].cpu().numpy()
+                raw_str = raw_dump(outputs[0:1])
                 if hmm_decoder:
-                    hmm_pred = hmm_decoder.decode(sample_out)
+                    hmm_str = hmm_decoder.decode(outputs[0].cpu().numpy())
                 else:
-                    hmm_pred = "?"
+                    hmm_str = raw_str
 
-            raw_pred = raw_dump(outputs[0].unsqueeze(0))
+                truth = texts[0]
+                cer = calculate_cer(hmm_str, truth)
 
-            print(f"  [Batch {i}] Truth: '{text[0]}'")
-            print(f"             Raw:   '{raw_pred}'")
-            print(f"             HMM:   '{hmm_pred}'")
-            print("-" * 20)
+                if len(hmm_str.strip()) > 0:
+                    non_empty += 1
 
-    avg_loss = total_loss / batches if batches > 0 else 0
-    non_empty_rate = non_empty_predictions / batches if batches > 0 else 0
-    avg_grad = total_grad / batches if batches > 0 else 0
+                unique_chars = len(set(hmm_str))
+                collapse_warning = " [COLLAPSE]" if unique_chars < 5 else ""
 
-    print(f"Avg Gradient Magnitude: {avg_grad:.6f}")
+                print(f"  [Batch {batch_idx}] Truth: '{truth}'")
+                print(f"             Raw:   '{raw_str}'")
+                print(f"             HMM:   '{hmm_str}'{collapse_warning}")
+                print("-" * 20)
 
-    return avg_loss, non_empty_rate
+        for i in range(len(texts)):
+            if hmm_decoder:
+                pred = hmm_decoder.decode(outputs[i].cpu().detach().numpy())
+            else:
+                pred = raw_dump(outputs[i:i + 1])
+            total_cer += calculate_cer(pred, texts[i])
+            num_samples += 1
+            if len(pred.strip()) > 0:
+                non_empty += 1
+
+    avg_loss = total_loss / len(dataloader)
+    avg_cer = total_cer / max(num_samples, 1)
+    non_empty_rate = non_empty / max(num_samples, 1) * 100
+
+    print(f"\nEpoch {epoch} Summary ---")
+    print(f"Loss: {avg_loss:.4f}")
+    print(f"Non-empty prediction rate: {non_empty_rate:.2f}%")
+    print(f"Avg CER: {avg_cer * 100:.2f}%")
+
+    return avg_loss, avg_cer
 
 
 def validate(model, dataloader, hmm):
     model.eval()
     total_cer = 0
-    total_lines = 0
+    num_samples = 0
 
     with torch.no_grad():
-        for features, _, text in dataloader:
+        for features, targets, texts in dataloader:
             features = features.to(DEVICE)
             outputs = model(features)
 
-            for j in range(len(text)):
-                sample_out = outputs[j].cpu().numpy()
-                pred = hmm.decode(sample_out)
+            for i in range(len(texts)):
+                pred = hmm.decode(outputs[i].cpu().numpy())
+                total_cer += calculate_cer(pred, texts[i])
+                num_samples += 1
 
-                cer = calculate_cer(pred, text[j])
-                total_cer += cer
-                total_lines += 1
-
-    return total_cer / total_lines if total_lines > 0 else 1.0
+    return total_cer / max(num_samples, 1)
 
 
 def align_dataset(model, hmm, full_dataset, train_subset):
     model.eval()
     hmm.reset_accumulators()
 
-    successful_alignments = 0
-    total_samples = len(train_subset)
+    print("Re-aligning dataset with forced alignment...")
+    aligned_count = 0
 
-    for i in range(total_samples):
-        real_idx = train_subset.indices[i]
-        feat, _, text = full_dataset.get_item_with_text(real_idx)
+    with torch.no_grad():
+        for idx in train_subset.indices:
+            windows, _, text = full_dataset.get_item_with_text(idx)
+            if windows is None or len(text) == 0:
+                continue
 
-        if len(text) == 0:
-            continue
+            windows = windows.to(DEVICE)
+            windows = (windows - windows.mean()) / (windows.std() + 1e-6)
 
-        feat = feat.to(DEVICE)
+            outputs = model(windows)
+            log_probs = outputs.cpu().numpy()
 
-        with torch.no_grad():
-            out = model(feat.unsqueeze(0)).squeeze(0).cpu().numpy()
+            scaled_emissions = hmm.get_scaled_emissions(log_probs)
+            new_path = hmm.forced_alignment(scaled_emissions, text)
 
-        scaled = hmm.get_scaled_emissions(out, penalize_space=False)
-        path = hmm.forced_alignment(scaled, text)
+            if new_path is not None:
+                full_dataset.update_target_at_index(idx, torch.from_numpy(new_path).long())
+                aligned_count += 1
 
-        if path is not None:
-            full_dataset.update_target_at_index(real_idx, torch.from_numpy(path).long())
-            successful_alignments += 1
-
-    hmm.update_parameters(smoothing=1.0)
-
-    return successful_alignments, total_samples
+    hmm.update_parameters()
+    print(f"Aligned {aligned_count} samples")
+    return aligned_count
 
 
 def main():
@@ -154,6 +187,10 @@ def main():
 
     full_dataset = IAMDataset(FEATURE_DIR, XML_DIR)
     print(f"Dataset size: {len(full_dataset)}")
+
+    if len(full_dataset) == 0:
+        print("Error: No data found.")
+        return
 
     train_size = int(0.9 * len(full_dataset))
     val_size = len(full_dataset) - train_size
@@ -167,10 +204,11 @@ def main():
 
     hmm = HybridHMM(num_classes=TOTAL_STATES, min_state_duration=1)
 
-    optimizer = optim.Adam(model.parameters(), lr=BASE_LR)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
+    class_weights = compute_class_weights(full_dataset, TOTAL_STATES).to(DEVICE)
+    criterion = nn.NLLLoss(weight=class_weights, ignore_index=-1)
 
-    criterion = nn.NLLLoss(ignore_index=-1)
+    optimizer = optim.Adam(model.parameters(), lr=BASE_LR, weight_decay=1e-5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     best_cer = 1.0
 
@@ -179,41 +217,38 @@ def main():
         print(f"--- Epoch {epoch} ---")
         print(f"{'=' * 50}")
 
-        current_lr = get_lr(epoch, base_lr=BASE_LR, warmup_epochs=3)
+        current_lr = get_lr(epoch, base_lr=BASE_LR, warmup_epochs=WARMUP_EPOCHS)
         for param_group in optimizer.param_groups:
             param_group['lr'] = current_lr
         print(f"Learning Rate: {current_lr:.6f}")
 
-        if epoch > WARMUP_EPOCHS:
-            print(f"Aligning with Viterbi...")
-            successful, total = align_dataset(model, hmm, full_dataset, train_subset)
-            print(f"Alignment: {successful}/{total} successful")
-        else:
+        if epoch <= WARMUP_EPOCHS:
             print(f"Warmup Phase: Using flat-start targets (epoch {epoch}/{WARMUP_EPOCHS})")
+        else:
+            if epoch == WARMUP_EPOCHS + 1:
+                full_dataset.clear_target_cache()
+            aligned = align_dataset(model, hmm, full_dataset, train_subset)
+            print(f"Re-alignment Phase: Updated {aligned} targets")
 
         print("Training...")
-        loss, non_empty_rate = train_epoch(model, train_loader, optimizer, criterion, hmm_decoder=hmm, epoch=epoch)
+        train_loss, train_cer = train_epoch(model, train_loader, optimizer, criterion, hmm, epoch)
 
-        print(f"\nValidating...")
-        avg_cer = validate(model, val_loader, hmm)
+        print("Validating...")
+        val_cer = validate(model, val_loader, hmm)
+        print(f"Validation CER: {val_cer * 100:.2f}%")
 
-        print(f"\n--- Epoch {epoch} Summary ---")
-        print(f"Loss: {loss:.4f}")
-        print(f"Non-empty prediction rate: {non_empty_rate:.2%}")
-        print(f"Avg CER: {avg_cer:.2%}")
+        scheduler.step(val_cer)
 
-        scheduler.step(loss)
+        if val_cer < best_cer:
+            best_cer = val_cer
+            torch.save(model.state_dict(), f"model_best.pth")
+            print(f"New best model saved! CER: {best_cer * 100:.2f}%")
 
-        if avg_cer < best_cer:
-            best_cer = avg_cer
-            torch.save(model.state_dict(), "model_best.pth")
-            print(f"New best model saved! CER: {best_cer:.2%}")
+        if epoch % 5 == 0:
+            torch.save(model.state_dict(), f"model_epoch_{epoch}.pth")
+            print(f"Checkpoint saved: model_epoch_{epoch}.pth")
 
-        torch.save(model.state_dict(), f"model_epoch_{epoch}.pth")
-
-        if epoch > WARMUP_EPOCHS and non_empty_rate < 0.1:
-            print("\nWARNING: Model may be collapsing (>90% empty predictions)")
-            print("Consider reducing learning rate or checking data.")
+    print(f"\nTraining Complete. Best CER: {best_cer * 100:.2f}%")
 
 
 if __name__ == "__main__":

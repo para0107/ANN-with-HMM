@@ -10,8 +10,8 @@ class HybridHMM:
         self.prior_counts = np.zeros(self.total_states)
 
         self.transitions = np.zeros((self.total_states, 2))
-        self.transitions[:, 0] = 0.7
-        self.transitions[:, 1] = 0.3
+        self.transitions[:, 0] = 0.6
+        self.transitions[:, 1] = 0.4
         self.trans_counts = np.zeros((self.total_states, 2))
 
         self.state_to_char = {}
@@ -25,15 +25,14 @@ class HybridHMM:
 
     def update_parameters(self, smoothing=1.0):
         total_frames = np.sum(self.prior_counts) + smoothing * self.total_states
-        self.priors = (self.prior_counts + smoothing) / total_frames
-
+        if total_frames > 0:
+            self.priors = (self.prior_counts + smoothing) / total_frames
         self.priors = np.clip(self.priors, 1e-6, 1.0)
         self.priors /= self.priors.sum()
 
         row_sums = np.sum(self.trans_counts, axis=1, keepdims=True) + 2 * smoothing
         self.transitions = (self.trans_counts + smoothing) / row_sums
-
-        self.transitions = np.clip(self.transitions, 0.05, 0.95)
+        self.transitions = np.clip(self.transitions, 0.1, 0.9)
 
     def get_scaled_emissions(self, ann_log_output, penalize_space=False):
         log_priors = np.log(self.priors + 1e-10)
@@ -41,14 +40,15 @@ class HybridHMM:
 
         if penalize_space:
             space_idx = 0
-            scaled[:, space_idx] -= 0.5
+            scaled[:, space_idx] -= 1.0
 
         return scaled
 
     def decode(self, log_probs, penalize_space=True):
+        log_probs = log_probs.copy()
+
         if penalize_space:
-            log_probs = log_probs.copy()
-            log_probs[:, 0] -= 0.5
+            log_probs[:, 0] -= 1.0
 
         best_states = np.argmax(log_probs, axis=1)
         decoded_text = []
@@ -60,7 +60,9 @@ class HybridHMM:
                 if char != prev_char:
                     decoded_text.append(char)
                     prev_char = char
-        return "".join(decoded_text)
+
+        result = "".join(decoded_text)
+        return result.strip()
 
     def forced_alignment(self, scaled_emissions, text):
         T = scaled_emissions.shape[0]
@@ -115,14 +117,14 @@ class HybridHMM:
                     duration[t, s] = 1
 
         best_final_score = -np.inf
-        curr_s = -1
+        curr_s = S - 1
 
-        for s in range(S - 1, -1, -1):
+        for s in range(S - 1, max(S - 10, -1), -1):
             if scores[T - 1, s] > best_final_score:
                 best_final_score = scores[T - 1, s]
                 curr_s = s
 
-        if curr_s == -1 or best_final_score == -np.inf:
+        if best_final_score == -np.inf:
             return self._proportional_alignment(text, T)
 
         path = np.zeros(T, dtype=int)
@@ -137,9 +139,10 @@ class HybridHMM:
                 if backpointers[t, curr_s] == 0:
                     self.trans_counts[global_id, 0] += 1
                 else:
-                    prev_global = allowable_states[curr_s - 1]
-                    self.trans_counts[prev_global, 1] += 1
-                    curr_s -= 1
+                    if curr_s > 0:
+                        prev_global = allowable_states[curr_s - 1]
+                        self.trans_counts[prev_global, 1] += 1
+                        curr_s -= 1
 
         return path
 
@@ -160,9 +163,9 @@ class HybridHMM:
 
         for i, state in enumerate(path):
             self.prior_counts[state] += 1
-            if i > 0 and path[i] == path[i-1]:
+            if i > 0 and path[i] == path[i - 1]:
                 self.trans_counts[state, 0] += 1
             elif i > 0:
-                self.trans_counts[path[i-1], 1] += 1
+                self.trans_counts[path[i - 1], 1] += 1
 
         return path

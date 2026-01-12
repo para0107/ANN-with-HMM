@@ -16,6 +16,13 @@ STATE_COUNTS = {
 DEFAULT_STATES = 3
 FRAMES_PER_STATE = 2
 
+CHAR_WEIGHTS = {
+    'm': 1.5, 'w': 1.5, 'M': 1.5, 'W': 1.5,
+    'i': 0.6, 'l': 0.6, 'I': 0.6, '1': 0.6, 'j': 0.6,
+    '.': 0.4, ',': 0.4, "'": 0.4,
+    ' ': 0.3,
+}
+
 CHAR_TO_STATE_RANGES = {}
 TOTAL_STATES = 0
 
@@ -34,30 +41,39 @@ def char_to_state_seq(char):
 
 
 def text_to_flat_start_path(text, total_frames):
-    text_state_sequence = []
-    for char in text:
-        text_state_sequence.extend(char_to_state_seq(char))
-
-    num_text_states = len(text_state_sequence)
-    if num_text_states == 0:
+    """Improved flat-start with proportional allocation based on character width."""
+    if not text:
         space_start, _ = CHAR_TO_STATE_RANGES[' ']
         return np.full(total_frames, space_start, dtype=int)
 
-    frames_per_state = max(1, total_frames // num_text_states)
+    states_with_weights = []
+    for char in text:
+        if char not in CHAR_TO_STATE_RANGES:
+            char = ' '
+        start, count = CHAR_TO_STATE_RANGES[char]
+        weight = CHAR_WEIGHTS.get(char, 1.0)
+        for i in range(count):
+            states_with_weights.append((start + i, weight / count))
+
+    if not states_with_weights:
+        space_start, _ = CHAR_TO_STATE_RANGES[' ']
+        return np.full(total_frames, space_start, dtype=int)
+
+    total_weight = sum(w for _, w in states_with_weights)
 
     path = []
-    for state in text_state_sequence:
-        path.extend([state] * frames_per_state)
+    accumulated_frames = 0.0
 
-    if len(path) < total_frames:
-        space_start, _ = CHAR_TO_STATE_RANGES[' ']
-        padding = [space_start] * (total_frames - len(path))
-        half = len(padding) // 2
-        path = padding[:half] + path + padding[half:]
-    elif len(path) > total_frames:
-        excess = len(path) - total_frames
-        start_cut = excess // 2
-        path = path[start_cut:start_cut + total_frames]
+    for state, weight in states_with_weights:
+        num_frames = (weight / total_weight) * total_frames
+        accumulated_frames += num_frames
+        target_frames = int(round(accumulated_frames)) - len(path)
+        target_frames = max(1, target_frames)
+        path.extend([state] * target_frames)
+
+    while len(path) < total_frames:
+        path.append(path[-1] if path else 0)
+    path = path[:total_frames]
 
     return np.array(path, dtype=int)
 
@@ -90,6 +106,7 @@ class IAMDataset(Dataset):
         self.half_window = window_width // 2
         self.data_entries = []
         self.target_cache = {}
+        self.feature_stats = None
 
         if not os.path.exists(feature_dir):
             return
@@ -129,7 +146,11 @@ class IAMDataset(Dataset):
 
     def __getitem__(self, idx):
         windows, _, text = self.get_item_with_text(idx)
-        windows = (windows - windows.mean()) / (windows.std() + 1e-6)
+
+        mean = windows.mean()
+        std = windows.std() + 1e-6
+        windows = (windows - mean) / std
+
         if idx in self.target_cache:
             targets = self.target_cache[idx]
         else:

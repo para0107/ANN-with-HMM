@@ -16,19 +16,20 @@ class ANN(nn.Module):
         self.network = nn.Sequential(
             nn.Linear(self.input_size, 512),
             nn.BatchNorm1d(512),
-            nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.LeakyReLU(0.1),
+            nn.Dropout(0.2),
+
+            nn.Linear(512, 512),
+            nn.BatchNorm1d(512),
+            nn.LeakyReLU(0.1),
+            nn.Dropout(0.2),
 
             nn.Linear(512, 256),
             nn.BatchNorm1d(256),
-            nn.ReLU(),
+            nn.LeakyReLU(0.1),
             nn.Dropout(0.1),
 
-            nn.Linear(256, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-
-            nn.Linear(128, self.output_size),
+            nn.Linear(256, self.output_size),
             nn.LogSoftmax(dim=1)
         )
 
@@ -37,7 +38,7 @@ class ANN(nn.Module):
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
             elif isinstance(m, nn.BatchNorm1d):
