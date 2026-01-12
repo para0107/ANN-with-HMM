@@ -1,11 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, Subset
 import numpy as np
 import os
+import copy
 
-from dataset import IAMDataset, CHARS, TOTAL_STATES, char_to_state_seq, iam_collate_fn
+from dataset import IAMDataset, CHARS, TOTAL_STATES, iam_collate_fn
 from model import ANN
 from hmm import HybridHMM
 from metrics import calculate_cer
@@ -20,7 +21,7 @@ BATCH_SIZE = 8
 BASE_LR = 0.001
 EPOCHS = 10
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-WARMUP_EPOCHS = 2
+WARMUP_EPOCHS = 5  # UPDATED: Increased to 5 to prevent model collapse
 NUM_WORKERS = 4
 PIN_MEMORY = True
 
@@ -32,10 +33,8 @@ def get_lr(epoch, base_lr=0.001, warmup_epochs=2):
 
 
 def compute_class_weights(dataset, num_classes):
-    """Compute inverse frequency weights for each class."""
     print("Computing class weights...")
     counts = np.zeros(num_classes)
-
     sample_size = min(len(dataset), 2000)
     indices = np.random.choice(len(dataset), sample_size, replace=False)
 
@@ -53,8 +52,54 @@ def compute_class_weights(dataset, num_classes):
                 weights[i] = total / (num_classes * counts[i])
 
     weights = np.clip(weights, 0.1, 10.0)
-    print(f"Weight range: {weights.min():.3f} - {weights.max():.3f}")
     return torch.FloatTensor(weights)
+
+
+def align_dataset(model, subset, hmm):
+    """
+    Viterbi Training: Runs the model on the training set to find the
+    optimal state sequence (alignment) for the ground truth text.
+    Updates the dataset cache with these refined targets.
+    """
+    print(f"--- Re-aligning Training Data (Forced Alignment) ---")
+    model.eval()
+
+    # Unwrap Subset to get to the actual dataset and original indices
+    base_dataset = subset.dataset if isinstance(subset, Subset) else subset
+    indices = subset.indices if isinstance(subset, Subset) else range(len(subset))
+
+    update_count = 0
+
+    # Reset HMM counters for re-estimation
+    hmm.reset_accumulators()
+
+    with torch.no_grad():
+        for i, original_idx in enumerate(indices):
+            # 1. Get data (bypass collate to get raw size)
+            features, _, text = base_dataset.get_item_with_text(original_idx)
+            features = features.unsqueeze(0).to(DEVICE)  # (1, T, F)
+
+            # 2. Network forward
+            outputs = model(features)
+            log_probs = outputs.squeeze(0).cpu().numpy()  # (T, C)
+
+            # 3. Scaled Emissions for HMM
+            scaled_emissions = hmm.get_scaled_emissions(log_probs)
+
+            # 4. Forced Alignment (Match text to image frames)
+            new_path = hmm.forced_alignment(scaled_emissions, text)
+
+            if new_path is not None:
+                # 5. Update Dataset Cache
+                base_dataset.update_target_at_index(original_idx, torch.from_numpy(new_path).long())
+                update_count += 1
+
+            if i % 2000 == 0 and i > 0:
+                print(f"   Aligned {i} samples...")
+
+    # UPDATED: Commented out to prevent HMM from learning bad transitions early on
+    # hmm.update_parameters()
+    print(f"--- Alignment Complete: Updated {update_count}/{len(subset)} samples. (HMM Params Frozen) ---")
 
 
 def train_epoch(model, dataloader, optimizer, criterion, hmm_decoder=None, epoch=1):
@@ -79,18 +124,18 @@ def train_epoch(model, dataloader, optimizer, criterion, hmm_decoder=None, epoch
 
         total_loss += loss.item()
 
-        if batch_idx % 100 == 0:
+        if batch_idx % 200 == 0:
             with torch.no_grad():
                 raw_str = raw_dump(outputs[0:1])
                 hmm_str = hmm_decoder.decode(outputs[0].cpu().numpy()) if hmm_decoder else ""
-                ground_truth = texts[0]  # First sample's ground truth
+                ground_truth = texts[0]
             print(f"  Batch {batch_idx}: Loss={loss.item():.4f}")
-            print(f"    GT:  '{ground_truth}'")
-            print(f"    Raw: '{raw_str}'")
-            print(f"    HMM: '{hmm_str}'")
+            print(f"    GT : '{ground_truth}'")
+            print(f"    Raw: '{raw_str[:100]}...'")
+            print(f"    HMM: '{hmm_str[:100]}...'")
 
     avg_loss = total_loss / len(dataloader)
-    return avg_loss, 0.0
+    return avg_loss
 
 
 def validate(model, dataloader, hmm):
@@ -115,38 +160,30 @@ def validate(model, dataloader, hmm):
 
 def main():
     print(f"Using device: {DEVICE}")
-    print(f"Total HMM states: {TOTAL_STATES}")
-
     os.makedirs(WEIGHTS_DIR, exist_ok=True)
 
     dataset = IAMDataset(FEATURE_DIR, XML_DIR)
-    print(f"Dataset size: {len(dataset)}")
-
     if len(dataset) == 0:
         print("No data found!")
         return
 
-    # Split: 80% train, 10% validation, 10% test
-    train_size = int(0.8 * len(dataset))
-    val_size = int(0.1 * len(dataset))
+    # Split: 90% train, 5% val, 5% test
+    train_size = int(0.90 * len(dataset))
+    val_size = int(0.05 * len(dataset))
     test_size = len(dataset) - train_size - val_size
 
     train_dataset, val_dataset, test_dataset = random_split(
         dataset, [train_size, val_size, test_size]
     )
-
     print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
 
+    # Loaders
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True,
         collate_fn=iam_collate_fn, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY
     )
     val_loader = DataLoader(
         val_dataset, batch_size=BATCH_SIZE, shuffle=False,
-        collate_fn=iam_collate_fn, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY
-    )
-    test_loader = DataLoader(
-        test_dataset, batch_size=BATCH_SIZE, shuffle=False,
         collate_fn=iam_collate_fn, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY
     )
 
@@ -160,15 +197,17 @@ def main():
     best_cer = float('inf')
 
     for epoch in range(1, EPOCHS + 1):
-        lr = get_lr(epoch, BASE_LR, WARMUP_EPOCHS)
+        lr = get_lr(epoch, BASE_LR, 2)
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
         print(f"\n=== Epoch {epoch}/{EPOCHS} (LR: {lr:.6f}) ===")
 
-        train_loss, _ = train_epoch(model, train_loader, optimizer, criterion, hmm, epoch)
+        # 1. Train
+        train_loss = train_epoch(model, train_loader, optimizer, criterion, hmm, epoch)
         print(f"Train Loss: {train_loss:.4f}")
 
+        # 2. Validate
         val_cer = validate(model, val_loader, hmm)
         print(f"Validation CER: {val_cer:.4f}")
 
@@ -179,13 +218,11 @@ def main():
 
         torch.save(model.state_dict(), os.path.join(WEIGHTS_DIR, f"model_epoch_{epoch}.pth"))
 
-    # Final evaluation on test set
-    print("\n=== Final Test Evaluation ===")
-    model.load_state_dict(torch.load(os.path.join(WEIGHTS_DIR, "best_model.pth")))
-    test_cer = validate(model, test_loader, hmm)
-    print(f"Test CER: {test_cer:.4f}")
+        # 3. ALIGNMENT STEP
+        if epoch >= WARMUP_EPOCHS:
+            align_dataset(model, train_dataset, hmm)
 
-    print(f"\nTraining complete. Best Val CER: {best_cer:.4f}, Test CER: {test_cer:.4f}")
+    print(f"\nTraining complete. Best Val CER: {best_cer:.4f}")
 
 
 if __name__ == "__main__":
