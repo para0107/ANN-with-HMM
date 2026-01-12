@@ -5,18 +5,16 @@ from torch.nn.utils.rnn import pad_sequence
 import xml.etree.ElementTree as ET
 import os
 
-# --- Configuration ---
 CHARS = ' !"#&\'()*+,-./0123456789:;?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 
-# --- DYNAMIC STATE MAPPING ---
 STATE_COUNTS = {
-    ' ': 1,  # Space
+    ' ': 1,
     '.': 2, ',': 2, "'": 2, '-': 2, '!': 2, 'i': 2, 'I': 2, 'l': 2, 'j': 2, '1': 2,
     'm': 5, 'w': 5, 'M': 5, 'W': 5,
     'f': 4, 't': 3, 'r': 3,
 }
 DEFAULT_STATES = 3
-FRAMES_PER_STATE = 4  # Heuristic: How many visual frames typically make up one state?
+FRAMES_PER_STATE = 2
 
 CHAR_TO_STATE_RANGES = {}
 TOTAL_STATES = 0
@@ -29,66 +27,56 @@ for char in CHARS:
 
 
 def char_to_state_seq(char):
-    if char not in CHARS: char = ' '
+    if char not in CHARS:
+        char = ' '
     start, count = CHAR_TO_STATE_RANGES[char]
     return [start + i for i in range(count)]
 
 
 def text_to_flat_start_path(text, total_frames):
-    """
-    Centered Flat Start:
-    Estimates the length of the text and centers it in the image,
-    filling the surrounding area with Space states.
-    Prevents 'Stretching' which poisons the model.
-    """
-    # 1. Generate the sequence of states for the text
     text_state_sequence = []
     for char in text:
         text_state_sequence.extend(char_to_state_seq(char))
 
     num_text_states = len(text_state_sequence)
-    if num_text_states == 0: return np.zeros(total_frames, dtype=int)
+    if num_text_states == 0:
+        space_start, _ = CHAR_TO_STATE_RANGES[' ']
+        return np.full(total_frames, space_start, dtype=int)
 
-    # 2. Estimate required frames (Heuristic)
-    # We repeat each state N times to give it duration
-    estimated_len = num_text_states * FRAMES_PER_STATE
+    frames_per_state = max(1, total_frames // num_text_states)
 
-    # 3. Create the full path array initialized to Space (ID for ' ' state)
-    # Find ID for space
-    space_start, _ = CHAR_TO_STATE_RANGES[' ']
-    path = np.full(total_frames, space_start, dtype=int)
+    path = []
+    for state in text_state_sequence:
+        path.extend([state] * frames_per_state)
 
-    # 4. Handle Lengths
-    if estimated_len >= total_frames:
-        # Text is too long (or image too short), squeeze it to fit
-        indices = np.linspace(0, num_text_states, total_frames, endpoint=False).astype(int)
-        path = np.array([text_state_sequence[i] for i in indices])
-    else:
-        # Text fits inside. Center it.
-        start_idx = (total_frames - estimated_len) // 2
+    if len(path) < total_frames:
+        space_start, _ = CHAR_TO_STATE_RANGES[' ']
+        padding = [space_start] * (total_frames - len(path))
+        half = len(padding) // 2
+        path = padding[:half] + path + padding[half:]
+    elif len(path) > total_frames:
+        excess = len(path) - total_frames
+        start_cut = excess // 2
+        path = path[start_cut:start_cut + total_frames]
 
-        # Expand the text states
-        expanded_seq = []
-        for s in text_state_sequence:
-            expanded_seq.extend([s] * FRAMES_PER_STATE)
-
-        # Copy into the middle of the path
-        path[start_idx: start_idx + len(expanded_seq)] = expanded_seq
-
-    return path
+    return np.array(path, dtype=int)
 
 
 def get_transcription(xml_dir, line_id):
     parts = line_id.split('-')
-    if len(parts) < 2: return ""
+    if len(parts) < 2:
+        return ""
     form_id = f"{parts[0]}-{parts[1]}"
     xml_path = os.path.join(xml_dir, form_id + ".xml")
-    if not os.path.exists(xml_path): return ""
+    if not os.path.exists(xml_path):
+        return ""
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
         for line in root.findall(".//line"):
-            if line.get('id') == line_id: return line.get('text')
+            if line.get('id') == line_id:
+                text = line.get('text', '')
+                return text.replace('&quot;', '"').replace('&apos;', "'").replace('&amp;', '&')
     except:
         pass
     return ""
@@ -103,18 +91,23 @@ class IAMDataset(Dataset):
         self.data_entries = []
         self.target_cache = {}
 
-        if not os.path.exists(feature_dir): return
+        if not os.path.exists(feature_dir):
+            return
         files = [f for f in os.listdir(feature_dir) if f.endswith('.npy')]
         for f in files:
             line_id = f.replace('.npy', '')
             text = get_transcription(xml_dir, line_id)
-            if text: self.data_entries.append(line_id)
+            if text:
+                self.data_entries.append(line_id)
 
     def __len__(self):
         return len(self.data_entries)
 
     def update_target_at_index(self, idx, new_target):
         self.target_cache[idx] = new_target
+
+    def clear_target_cache(self):
+        self.target_cache.clear()
 
     def get_item_with_text(self, idx):
         line_id = self.data_entries[idx]
@@ -136,6 +129,7 @@ class IAMDataset(Dataset):
 
     def __getitem__(self, idx):
         windows, _, text = self.get_item_with_text(idx)
+        windows = (windows - windows.mean()) / (windows.std() + 1e-6)
         if idx in self.target_cache:
             targets = self.target_cache[idx]
         else:

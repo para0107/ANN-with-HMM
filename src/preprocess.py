@@ -2,7 +2,6 @@ import os
 import cv2
 import numpy as np
 
-# --- Configuration ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 DATA_ROOT = os.path.join(PROJECT_ROOT, "IAM")
@@ -11,7 +10,7 @@ IMAGE_DIR = os.path.join(DATA_ROOT, "data", "lines")
 OUTPUT_DIR = os.path.join(DATA_ROOT, "features")
 
 if not os.path.exists(LINES_FILE):
-    pass  # Non-critical if running inference only
+    pass
 
 TARGET_HEIGHT = 128
 GRID_ROWS = 20
@@ -22,7 +21,7 @@ def clean_image(img):
     """Replicates 'Enhancer-MLP': Removes noise and binarizes."""
     if len(img.shape) > 2:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    img = cv2.bitwise_not(img)  # Invert: Ink=White
+    img = cv2.bitwise_not(img)
     img = cv2.GaussianBlur(img, (5, 5), 0)
     _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return img
@@ -34,19 +33,15 @@ def deslope_image(img):
     Uses linear regression on ink pixels.
     """
     coords = np.column_stack(np.where(img > 0))
-    if len(coords) < 50: return img  # Too little ink to judge slope
+    if len(coords) < 50: return img
 
-    # Coordinates are (y, x). Fit y = mx + c
     y, x = coords[:, 0], coords[:, 1]
 
-    # Simple linear regression
     m, c = np.polyfit(x, y, 1)
     angle = np.arctan(m) * (180 / np.pi)
 
-    # Ignore extreme angles (likely vertical lines or noise)
     if abs(angle) > 20: return img
 
-    # Rotate
     h, w = img.shape
     center = (w // 2, h // 2)
     M = cv2.getRotationMatrix2D(center, angle, 1.0)
@@ -133,9 +128,8 @@ def main():
             img = cv2.imread(img_path)
             if img is None: continue
 
-            # --- UPDATED PIPELINE ---
             img = clean_image(img)
-            img = deslope_image(img)  # <--- NEW STEP
+            img = deslope_image(img)
             img = deslant_image(img)
             img = normalize_size(img)
 

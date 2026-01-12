@@ -35,6 +35,12 @@ The system creates a "virtuous cycle" of training without requiring frame-level 
 
 ## 3. Technical Architecture & Implementation
 
+### System Architecture Diagram
+
+
+### Processing Pipeline
+
+
 ### A. Preprocessing Pipeline (`preprocess.py`)
 Raw handwriting images are highly variable. We implement a rigorous geometric normalization pipeline to reduce variance before feature extraction.
 
