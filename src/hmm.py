@@ -9,9 +9,10 @@ class HybridHMM:
         self.priors = np.full(self.total_states, 1.0 / self.total_states)
         self.prior_counts = np.zeros(self.total_states)
 
+        # Sticky states: high self-loop probability
         self.transitions = np.zeros((self.total_states, 2))
-        self.transitions[:, 0] = 0.6
-        self.transitions[:, 1] = 0.4
+        self.transitions[:, 0] = 0.9  # self-loop (stay)
+        self.transitions[:, 1] = 0.1  # next state (move)
         self.trans_counts = np.zeros((self.total_states, 2))
 
         self.state_to_char = {}
@@ -45,6 +46,80 @@ class HybridHMM:
         return scaled
 
     def decode(self, log_probs, penalize_space=True):
+        """
+        Viterbi-style decoding that respects minimum state duration.
+        Collapses by CHARACTER, not by state.
+        """
+        log_probs = log_probs.copy()
+
+        if penalize_space:
+            log_probs[:, 0] -= 1.0
+
+        T, S = log_probs.shape
+
+        # Use Viterbi with duration constraints
+        viterbi = np.full((T, S), -np.inf)
+        backptr = np.zeros((T, S), dtype=int)
+        duration = np.ones((T, S), dtype=int)
+
+        log_trans_stay = np.log(self.transitions[:, 0] + 1e-10)
+        log_trans_move = np.log(self.transitions[:, 1] + 1e-10)
+        log_prior = np.log(self.priors + 1e-10)
+
+        # Initialize first frame
+        viterbi[0] = log_probs[0] + log_prior
+
+        for t in range(1, T):
+            for s in range(S):
+                # Option 1: Stay in same state
+                score_stay = viterbi[t - 1, s] + log_trans_stay[s] + log_probs[t, s]
+
+                # Option 2: Come from any previous state (with duration constraint)
+                score_move = -np.inf
+                best_prev = s
+
+                for prev_s in range(S):
+                    if prev_s == s:
+                        continue
+                    # Only allow transition if previous state met minimum duration
+                    if duration[t - 1, prev_s] >= self.min_state_duration:
+                        candidate = viterbi[t - 1, prev_s] + log_trans_move[prev_s] + log_probs[t, s]
+                        if candidate > score_move:
+                            score_move = candidate
+                            best_prev = prev_s
+
+                if score_stay >= score_move:
+                    viterbi[t, s] = score_stay
+                    backptr[t, s] = s  # stayed
+                    duration[t, s] = duration[t - 1, s] + 1
+                else:
+                    viterbi[t, s] = score_move
+                    backptr[t, s] = best_prev  # moved from best_prev
+                    duration[t, s] = 1
+
+        # Backtrace
+        path = np.zeros(T, dtype=int)
+        path[T - 1] = np.argmax(viterbi[T - 1])
+
+        for t in range(T - 2, -1, -1):
+            path[t] = backptr[t + 1, path[t + 1]]
+
+        # Collapse to text by CHARACTER (not state)
+        decoded_text = []
+        prev_char = None
+
+        for state in path:
+            if state in self.state_to_char:
+                char = self.state_to_char[state]
+                if char != prev_char:
+                    decoded_text.append(char)
+                    prev_char = char
+
+        result = "".join(decoded_text)
+        return result.strip()
+
+    def decode_greedy(self, log_probs, penalize_space=True):
+        """Original greedy decode for comparison."""
         log_probs = log_probs.copy()
 
         if penalize_space:

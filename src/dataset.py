@@ -41,11 +41,15 @@ def char_to_state_seq(char):
 
 
 def text_to_flat_start_path(text, total_frames):
-    """Improved flat-start with proportional allocation based on character width."""
+    """
+    Centered flat-start: places text in the CENTER of the frame sequence,
+    with Space states filling the margins to prevent margin poisoning.
+    """
     if not text:
         space_start, _ = CHAR_TO_STATE_RANGES[' ']
         return np.full(total_frames, space_start, dtype=int)
 
+    # Build state sequence for the text
     states_with_weights = []
     for char in text:
         if char not in CHAR_TO_STATE_RANGES:
@@ -59,20 +63,49 @@ def text_to_flat_start_path(text, total_frames):
         space_start, _ = CHAR_TO_STATE_RANGES[' ']
         return np.full(total_frames, space_start, dtype=int)
 
-    total_weight = sum(w for _, w in states_with_weights)
+    # Estimate text length (use ~60-70% of frames for text, rest for margins)
+    text_frame_ratio = 0.7
+    text_frames = int(total_frames * text_frame_ratio)
+    text_frames = max(text_frames, len(states_with_weights))
+    text_frames = min(text_frames, total_frames)
 
+    # Calculate margin sizes
+    total_margin = total_frames - text_frames
+    left_margin = total_margin // 2
+    right_margin = total_margin - left_margin
+
+    # Build the path
+    space_start, _ = CHAR_TO_STATE_RANGES[' ']
     path = []
+
+    # Left margin (spaces)
+    path.extend([space_start] * left_margin)
+
+    # Center: text with proportional allocation
+    total_weight = sum(w for _, w in states_with_weights)
     accumulated_frames = 0.0
+    text_path = []
 
     for state, weight in states_with_weights:
-        num_frames = (weight / total_weight) * total_frames
+        num_frames = (weight / total_weight) * text_frames
         accumulated_frames += num_frames
-        target_frames = int(round(accumulated_frames)) - len(path)
+        target_frames = int(round(accumulated_frames)) - len(text_path)
         target_frames = max(1, target_frames)
-        path.extend([state] * target_frames)
+        text_path.extend([state] * target_frames)
 
+    # Adjust text_path to exact length
+    while len(text_path) < text_frames:
+        text_path.append(text_path[-1] if text_path else space_start)
+    text_path = text_path[:text_frames]
+
+    path.extend(text_path)
+
+    # Right margin (spaces)
+    path.extend([space_start] * right_margin)
+
+    # Final adjustment
     while len(path) < total_frames:
-        path.append(path[-1] if path else 0)
+        path.append(space_start)
     path = path[:total_frames]
 
     return np.array(path, dtype=int)
