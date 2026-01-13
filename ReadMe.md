@@ -193,7 +193,7 @@ To replicate the experiments, run the main training loop. This handles dataset l
 
 ```bash
 # Clone the repository
-git clone [https://github.com/your-username/hybrid-ann-hmm.git](https://github.com/your-username/hybrid-ann-hmm.git)
+https://github.com/para0107/ANN-with-HMM
 
 # Install dependencies
 pip install torch numpy opencv-python
