@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 class ANN(nn.Module):
-    def __init__(self, feature_dim=60, window_width=9, num_chars=78, states_per_char=3, num_classes=None):
+    def __init__(self, feature_dim=60, window_width=13, num_chars=78, states_per_char=3, num_classes=None):
         super(ANN, self).__init__()
 
         self.input_size = feature_dim * window_width
@@ -12,6 +12,7 @@ class ANN(nn.Module):
         else:
             self.output_size = num_chars * states_per_char
 
+        # Architecture kept EXACTLY as requested (256 -> 128)
         self.network = nn.Sequential(
             nn.Linear(self.input_size, 256),
             nn.BatchNorm1d(256),

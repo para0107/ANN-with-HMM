@@ -19,11 +19,12 @@ WEIGHTS_DIR = os.path.join(BASE_DIR, 'src', 'weights')
 
 BATCH_SIZE = 8
 BASE_LR = 0.001
-EPOCHS = 10
+EPOCHS = 12
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-WARMUP_EPOCHS = 5  # UPDATED: Increased to 5 to prevent model collapse
+WARMUP_EPOCHS = 5  # Critical: Train 5 epochs on flat start before aligning
 NUM_WORKERS = 4
 PIN_MEMORY = True
+WINDOW_WIDTH = 13  # Updated to 13 (Increased context)
 
 
 def get_lr(epoch, base_lr=0.001, warmup_epochs=2):
@@ -32,72 +33,42 @@ def get_lr(epoch, base_lr=0.001, warmup_epochs=2):
     return base_lr
 
 
-def compute_class_weights(dataset, num_classes):
-    print("Computing class weights...")
-    counts = np.zeros(num_classes)
-    sample_size = min(len(dataset), 2000)
-    indices = np.random.choice(len(dataset), sample_size, replace=False)
-
-    for i in indices:
-        _, targets, _ = dataset[i]
-        for t in targets.numpy():
-            if 0 <= t < num_classes:
-                counts[int(t)] += 1
-
-    weights = np.ones(num_classes)
-    total = counts.sum()
-    if total > 0:
-        for i in range(num_classes):
-            if counts[i] > 0:
-                weights[i] = total / (num_classes * counts[i])
-
-    weights = np.clip(weights, 0.1, 10.0)
-    return torch.FloatTensor(weights)
-
-
 def align_dataset(model, subset, hmm):
     """
-    Viterbi Training: Runs the model on the training set to find the
-    optimal state sequence (alignment) for the ground truth text.
-    Updates the dataset cache with these refined targets.
+    Runs forced alignment to update training targets.
     """
     print(f"--- Re-aligning Training Data (Forced Alignment) ---")
     model.eval()
 
-    # Unwrap Subset to get to the actual dataset and original indices
     base_dataset = subset.dataset if isinstance(subset, Subset) else subset
     indices = subset.indices if isinstance(subset, Subset) else range(len(subset))
 
     update_count = 0
 
-    # Reset HMM counters for re-estimation
-    hmm.reset_accumulators()
+    # We do NOT reset HMM accumulators or update params here anymore
+    # to prevent it from learning bad transitions from the noisy model.
+    # hmm.reset_accumulators()
 
     with torch.no_grad():
         for i, original_idx in enumerate(indices):
-            # 1. Get data (bypass collate to get raw size)
+            # Get data with correct window width
             features, _, text = base_dataset.get_item_with_text(original_idx)
-            features = features.unsqueeze(0).to(DEVICE)  # (1, T, F)
+            features = features.unsqueeze(0).to(DEVICE)
 
-            # 2. Network forward
             outputs = model(features)
-            log_probs = outputs.squeeze(0).cpu().numpy()  # (T, C)
+            log_probs = outputs.squeeze(0).cpu().numpy()
 
-            # 3. Scaled Emissions for HMM
             scaled_emissions = hmm.get_scaled_emissions(log_probs)
-
-            # 4. Forced Alignment (Match text to image frames)
             new_path = hmm.forced_alignment(scaled_emissions, text)
 
             if new_path is not None:
-                # 5. Update Dataset Cache
                 base_dataset.update_target_at_index(original_idx, torch.from_numpy(new_path).long())
                 update_count += 1
 
             if i % 2000 == 0 and i > 0:
                 print(f"   Aligned {i} samples...")
 
-    # UPDATED: Commented out to prevent HMM from learning bad transitions early on
+    # Critical: Do NOT update HMM params yet. Let them remain fixed (sticky).
     # hmm.update_parameters()
     print(f"--- Alignment Complete: Updated {update_count}/{len(subset)} samples. (HMM Params Frozen) ---")
 
@@ -162,12 +133,12 @@ def main():
     print(f"Using device: {DEVICE}")
     os.makedirs(WEIGHTS_DIR, exist_ok=True)
 
-    dataset = IAMDataset(FEATURE_DIR, XML_DIR)
+    # Initialize Dataset with new window width
+    dataset = IAMDataset(FEATURE_DIR, XML_DIR, window_width=WINDOW_WIDTH)
     if len(dataset) == 0:
         print("No data found!")
         return
 
-    # Split: 90% train, 5% val, 5% test
     train_size = int(0.90 * len(dataset))
     val_size = int(0.05 * len(dataset))
     test_size = len(dataset) - train_size - val_size
@@ -177,7 +148,6 @@ def main():
     )
     print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
 
-    # Loaders
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True,
         collate_fn=iam_collate_fn, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY
@@ -187,11 +157,12 @@ def main():
         collate_fn=iam_collate_fn, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY
     )
 
-    model = ANN(num_classes=TOTAL_STATES).to(DEVICE)
+    # Initialize Model (Architecture Unchanged, just input size adapted)
+    model = ANN(num_classes=TOTAL_STATES, window_width=WINDOW_WIDTH).to(DEVICE)
     hmm = HybridHMM(num_classes=TOTAL_STATES)
 
-    weights = compute_class_weights(dataset, TOTAL_STATES).to(DEVICE)
-    criterion = nn.NLLLoss(weight=weights, ignore_index=-1)
+    # CRITICAL FIX: No class weights (weight=None) to prevent "g" collapse
+    criterion = nn.NLLLoss(weight=None, ignore_index=-1)
     optimizer = optim.Adam(model.parameters(), lr=BASE_LR)
 
     best_cer = float('inf')
@@ -203,11 +174,9 @@ def main():
 
         print(f"\n=== Epoch {epoch}/{EPOCHS} (LR: {lr:.6f}) ===")
 
-        # 1. Train
         train_loss = train_epoch(model, train_loader, optimizer, criterion, hmm, epoch)
         print(f"Train Loss: {train_loss:.4f}")
 
-        # 2. Validate
         val_cer = validate(model, val_loader, hmm)
         print(f"Validation CER: {val_cer:.4f}")
 
@@ -218,7 +187,7 @@ def main():
 
         torch.save(model.state_dict(), os.path.join(WEIGHTS_DIR, f"model_epoch_{epoch}.pth"))
 
-        # 3. ALIGNMENT STEP
+        # Align only after warmup
         if epoch >= WARMUP_EPOCHS:
             align_dataset(model, train_dataset, hmm)
 

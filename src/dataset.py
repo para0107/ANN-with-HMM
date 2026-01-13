@@ -16,13 +16,6 @@ STATE_COUNTS = {
 DEFAULT_STATES = 3
 FRAMES_PER_STATE = 2
 
-CHAR_WEIGHTS = {
-    'm': 1.5, 'w': 1.5, 'M': 1.5, 'W': 1.5,
-    'i': 0.6, 'l': 0.6, 'I': 0.6, '1': 0.6, 'j': 0.6,
-    '.': 0.4, ',': 0.4, "'": 0.4,
-    ' ': 0.3,
-}
-
 CHAR_TO_STATE_RANGES = {}
 TOTAL_STATES = 0
 
@@ -33,23 +26,14 @@ for char in CHARS:
     TOTAL_STATES += count
 
 
-def char_to_state_seq(char):
-    if char not in CHARS:
-        char = ' '
-    start, count = CHAR_TO_STATE_RANGES[char]
-    return [start + i for i in range(count)]
-
-
 def text_to_flat_start_path(text, total_frames):
     """
     Proportional flat-start: distributes ALL text states across ALL frames.
-    No space padding at margins.
     """
     if not text:
         space_start, _ = CHAR_TO_STATE_RANGES[' ']
         return np.full(total_frames, space_start, dtype=int)
 
-    # Build state sequence for the text (no margin spaces)
     state_sequence = []
     for char in text:
         if char not in CHAR_TO_STATE_RANGES:
@@ -62,12 +46,10 @@ def text_to_flat_start_path(text, total_frames):
         space_start, _ = CHAR_TO_STATE_RANGES[' ']
         return np.full(total_frames, space_start, dtype=int)
 
-    # Spread states proportionally across ALL frames
     indices = np.linspace(0, len(state_sequence) - 1, total_frames).astype(int)
     path = np.array([state_sequence[i] for i in indices], dtype=int)
 
     return path
-
 
 
 def get_transcription(xml_dir, line_id):
@@ -91,14 +73,13 @@ def get_transcription(xml_dir, line_id):
 
 
 class IAMDataset(Dataset):
-    def __init__(self, feature_dir, xml_dir, window_width=9):
+    def __init__(self, feature_dir, xml_dir, window_width=13):  # Updated to 13
         self.feature_dir = feature_dir
         self.xml_dir = xml_dir
         self.window_width = window_width
         self.half_window = window_width // 2
         self.data_entries = []
         self.target_cache = {}
-        self.feature_stats = None
 
         if not os.path.exists(feature_dir):
             return
@@ -125,15 +106,18 @@ class IAMDataset(Dataset):
         try:
             features = np.load(feat_path).astype(np.float32)
         except:
-            return torch.zeros((10, 540)), None, ""
+            return torch.zeros((10, 60 * self.window_width)), None, ""
 
         features_padded = np.pad(features, ((self.half_window, self.half_window), (0, 0)), mode='edge')
+
         num_frames = features.shape[0]
         feat_dim = features.shape[1]
         windows = np.zeros((num_frames, self.window_width * feat_dim), dtype=np.float32)
+
         for t in range(num_frames):
             win = features_padded[t: t + self.window_width]
             windows[t] = win.flatten()
+
         return torch.from_numpy(windows), None, text
 
     def __getitem__(self, idx):
